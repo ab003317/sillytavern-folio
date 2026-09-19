@@ -38,6 +38,14 @@ export function mountUI(engine){
         try{await task();}catch(e){error.textContent=e.message||'操作未完成，請稍後重試';error.hidden=false;}
         finally{if(b)b.disabled=false;}
     };
+    const rebuildPanels=[];
+    for(const target of [panels.run,panels.pages]){
+        const section=el('div','folio-rebuild'),bar=el('div','folio-toolbar'),detail=el('p','folio-muted'),progress=el('progress'),outcome=el('p','folio-rebuild-status');
+        outcome.setAttribute('role','status');progress.setAttribute('aria-label','本次重整進度');
+        const all=button('一鍵重新整理全部',perform(()=>engine.refreshAll(state.chatIdentity)),'folio-primary');
+        const stop=button('停止本次重整',perform(()=>engine.stopRebuild())),retry=button('立即重試',()=>engine.retry());
+        bar.append(all,stop,retry);section.append(bar,detail,progress,outcome);target.append(section);rebuildPanels.push({all,stop,retry,detail,progress,outcome});
+    }
     const runBody=el('div');panels.run.append(runBody);
     const pageTools=el('div','folio-toolbar'),search=el('input','folio-search'),filter=el('select');
     search.type='search';search.placeholder='找標題、人物、摘要或正文';search.setAttribute('aria-label','搜尋書頁');
@@ -54,12 +62,12 @@ export function mountUI(engine){
     function open(){state=engine.snapshot();update(state);if(!dialog.open)dialog.showModal();setTab(tab);tabButtons[tab].focus();}
     function setTab(key){tab=key;for(const k of Object.keys(labels)){panels[k].hidden=k!==key;tabButtons[k].setAttribute('aria-selected',String(k===key));tabButtons[k].tabIndex=k===key?0:-1;}render();}
     function renderRun(){
-        const intro=el('div','folio-run-intro');intro.append(heading(state.enabled?'你繼續故事，這裡自動接著整理':'記憶已暫停','一頁是一則角色正文，不是固定字數，也不是玩家與角色各算一樓。长正文會拆段寫摘要，再合成一頁。修改、換回覆或刪除後，只重做內容真正改變的頁。'),el('p','folio-prose',`這段聊天有 ${state.total} 頁正文，${state.ready} 頁已有摘要，${state.indexed} 頁已載入本機索引。`));
+        const intro=el('div','folio-run-intro');intro.append(heading(state.rebuild?.pending?'正在執行手動重新整理':state.enabled?'你繼續故事，這裡自動接著整理':'自動記憶已暫停','一頁是一則角色正文，不是固定字數，也不是玩家與角色各算一樓。長正文會拆段寫摘要，再合成一頁。修改、換回覆或刪除後，只重做內容真正改變的頁。手動重新整理不受自動開關影響。'),el('p','folio-prose',`這段聊天有 ${state.total} 頁正文，${state.ready} 頁已有摘要，${state.indexed} 頁已載入本機索引。`));
         const progress=el('progress');progress.max=Math.max(1,state.total);progress.value=state.ready;progress.setAttribute('aria-label','摘要整理進度');intro.append(progress);
         const flow=el('ol','folio-flow');
         const steps=[['清理正文','去掉已知思考、狀態欄等內容；原聊天保留。',`${state.total} 頁`],['寫小摘要','每頁整理人物、事件、約定和伏筆。',`${state.ready}/${state.total}`],['建立本機向量','讓同義情節也能找到；不呼叫向量 API。',`${state.indexed}/${state.total}`],['讀目錄選頁','回覆前以向量與文字找候選，再讓助手看小摘要。',state.last?'已有取用紀錄':'下次回覆時執行'],['放回歷史','選中的完整正文與玩家背景，按時間放回預設歷史。',state.last?.final?'已觀測最終請求':'等待查頁']];
         for(const [title,text,value]of steps){const li=el('li');li.append(el('strong','',title),el('span','folio-flow-value',value),el('p','',text));flow.append(li);}
-        const actions=el('div','folio-toolbar');actions.append(button('繼續整理',()=>engine.retry()),button('查看書頁',()=>setTab('pages')),button('查看取用',()=>setTab('selection')));
+        const actions=el('div','folio-toolbar'),resume=button('繼續自動整理',()=>{if(!state.enabled)engine.toggle(true);engine.retry();});actions.append(resume,button('查看書頁',()=>setTab('pages')),button('查看取用',()=>setTab('selection')));
         if(state.conflict)actions.append(button('改用書頁（停用 Anima 並刷新）',perform(()=>engine.host.useFolioInstead(state.conflict))));
         const activity=el('ul','folio-activity');for(const item of state.activity.slice(0,12)){const li=el('li');li.append(el('time','',stamp(item.time)),el('span','',item.message));activity.append(li);}
         runBody.replaceChildren(intro,flow,actions,heading('最近動作'),state.activity.length?activity:el('p','folio-muted','開啟聊天後，新的整理與查頁動作會自動出現在這裡。'));
@@ -72,7 +80,7 @@ export function mountUI(engine){
         for(const e of entries.slice(0,shown)){
             const b=button('',()=>{selected=e.ref;editing=false;renderPages();if(matchMedia('(max-width: 640px)').matches)reader.scrollIntoView({block:'start',behavior:'instant'});},'folio-page-link');
             b.setAttribute('aria-current',String(e.ref.handle===selected?.handle));b.dataset.index=String(e.index);
-            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'等候整理；正文已保留'),el('span','folio-page-state',e.ready?e.indexed?'摘要與向量已就緒':'摘要完成，索引待載入':`摘要 ${e.parts}/${e.totalParts} 段`));fragment.append(b);
+            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'等候整理；正文已保留'),el('span','folio-page-state',e.rebuilding?e.previousSummary?'重整中，暫顯示舊摘要':`重整中：摘要 ${e.parts}/${e.totalParts} 段`:e.ready?e.indexed?'摘要與向量已就緒':'摘要完成，索引待載入':`摘要 ${e.parts}/${e.totalParts} 段`));fragment.append(b);
         }
         if(entries.length>shown)fragment.append(button('載入更多書頁',()=>{shown+=60;renderPages();}));
         if(!entries.length)fragment.append(el('p','folio-empty','沒有符合的書頁。開啟一段聊天，或換個詞搜尋。'));
@@ -84,11 +92,14 @@ export function mountUI(engine){
         if(e.playerInput)nodes.push(disclosure('當時的玩家輸入',e.playerInput));
         nodes.push(heading('小摘要','助手與向量檢索讀的是這段目錄。它用來選頁，不會取代選中的正文。'),el('p','folio-summary-text',e.summary||'尚未完成，整理好會自動更新。'),heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body),disclosure('對照原始訊息',e.raw));
         const actions=el('div','folio-toolbar');
-        actions.append(button(e.pinned?'取消釘選':'釘選這頁',perform(()=>engine.pin(e.ref))),button('重新整理此頁',perform(()=>engine.refresh(e.ref))),button('修改小摘要',()=>{
+        const refresh=button(e.rebuilding?'正在重整此頁…':'重新整理此頁',perform(()=>engine.refresh(e.ref)),'folio-primary');refresh.disabled=!!state.resetting||!!state.rebuild?.pending||!!state.generating;
+        actions.append(refresh,button(e.pinned?'取消釘選':'釘選這頁',perform(()=>engine.pin(e.ref))),button('修改小摘要',()=>{
             editing=true;const input=el('textarea','folio-summary-edit');input.rows=6;input.value=e.summary;input.setAttribute('aria-label','修改小摘要');const bar=el('div','folio-toolbar');
             bar.append(button('保存摘要',perform(async()=>{await engine.editSummary(e.ref,input.value);editing=false;renderPages();}),'folio-primary'),button('取消',()=>{editing=false;renderPages();}));reader.append(input,bar);input.focus();
         }),button('回到聊天',perform(()=>{const p=engine.resolvePage(e.ref),m=document.querySelector(`#chat .mes[mesid="${p.index}"]`);if(m){dialog.close();m.scrollIntoView({block:'center',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});}else throw new Error('這則訊息尚未載入聊天畫面，請先載入更早的訊息。');})));
-        nodes.push(actions);reader.replaceChildren(...nodes);for(const d of reader.querySelectorAll('details'))d.open=openDetails.has(d.firstElementChild?.textContent);
+        const pageStatus=el('p','folio-page-work');pageStatus.setAttribute('role','status');
+        pageStatus.textContent=e.rebuilding?state.warning?`等待重試：${state.warning}`:state.work?.page===e.number?state.status:'已排入優先重整；稍後自動更新小摘要與向量。':e.rebuilt?'此頁已重新整理完成。':'';
+        nodes.splice(2,0,actions,pageStatus);reader.replaceChildren(...nodes);for(const d of reader.querySelectorAll('details'))d.open=openDetails.has(d.firstElementChild?.textContent);
     }
     function renderSelection(){
         const last=state.last;previewButton.disabled=state.busy||!state.enabled;const nodes=[];
@@ -111,7 +122,18 @@ export function mountUI(engine){
     function renderHelper(){
         apiForms.render(state);
     }
-    function render(){if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}
+    function renderRebuild(){
+        const job=state.rebuild;
+        for(const f of rebuildPanels){
+            f.all.disabled=!state.total||state.resetting||!!job?.pending||state.generating;
+            f.all.textContent=state.resetting?'正在保存重整任務…':'一鍵重新整理全部';
+            f.detail.textContent=`重做目前聊天的 ${state.total} 頁摘要與向量索引，包含人工修改的摘要；會呼叫總結模型並可能收費。不刪正文，自動記憶關閉時也能執行。${state.generating?'正文生成中，結束後可重新整理。':''}`;
+            f.stop.hidden=!job?.pending;f.stop.disabled=state.resetting;f.retry.hidden=!job?.pending||!state.warning;f.retry.disabled=state.busy;
+            f.progress.hidden=!job;f.progress.max=job?.total||1;f.progress.value=(job?.done??0)+(job?.cancelled??0)+(job?.removed??0);
+            f.outcome.textContent=job?`本次重整：摘要 ${job.done}/${job.total} 頁，向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已完成，向量暫用文字檢索。':job.cancelled?'已停止。':'已完成。'}`:'';
+        }
+    }
+    function render(){renderRebuild();if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}
     function update(next){
         state=next;toggle.checked=next.enabled;status.textContent=next.status;warning.textContent=next.warning;warning.hidden=!next.warning;
         badge.textContent=next.conflict?'衝突暫停':!next.enabled?'暫停':`${next.ready}/${next.total}`;

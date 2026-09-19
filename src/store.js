@@ -26,6 +26,14 @@ export class Cache {
             tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error ?? new Error('快取交易中止'));
         });
     }
+    async putMany(store,entries) {
+        const db=await this.open();
+        return new Promise((resolve,reject)=>{
+            const tx=db.transaction(store,'readwrite'),table=tx.objectStore(store);
+            for(const [key,value]of entries)table.put(value,key);
+            tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('重整快取交易中止'));
+        });
+    }
     async lease(key, owner, release = false) {
         const db = await this.open();
         return new Promise((resolve, reject) => {

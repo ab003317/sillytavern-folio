@@ -8,6 +8,7 @@ class MemoryCache {
     constructor(){this.data=new Map();this.owner=null;}
     async get(s,k){return structuredClone(this.data.get(s+k));}
     async put(s,k,v){this.data.set(s+k,structuredClone(v));}
+    async putMany(s,entries){for(const [k,v]of entries)await this.put(s,k,v);}
     async pruneRecords(identity,hashes){const prefix='records'+identity+':',keep=new Set(hashes);for(const key of this.data.keys())if(key.startsWith(prefix)&&!keep.has(key.slice(prefix.length)))this.data.delete(key);}
     async lease(k,o,release=false){if(release){if(this.owner===o)this.owner=null;return false;}if(this.owner&&this.owner!==o)return false;this.owner=o;return true;}
     close(){}
@@ -24,6 +25,96 @@ function rig(messages=[message('港口的兩人交換信物，約定明日再見
     const engine=new Engine(host,cache,embedder);engine.schedule=()=>{};
     return {engine,host,cache,embedder,c,stats:()=>({calls,saves})};
 }
+
+test('manual refresh really calls summary while auto memory is paused, preserving the automatic setting',async()=>{
+    const r=rig();await r.engine.tick();const before=r.stats().calls;r.engine.toggle(false);
+    await r.engine.refresh(r.engine.snapshot().entries[0].ref);
+    assert.equal(r.engine.snapshot().entries[0].previousSummary,true);assert.equal(r.engine.snapshot().rebuild.pending,1);
+    await r.engine.tick();await r.engine.tick();
+    assert.equal(r.stats().calls,before+1);assert.equal(r.host.settings().enabled,false);assert.equal(r.engine.snapshot().rebuild.complete,true);
+    assert.equal(r.engine.snapshot().rebuild.vectors,1);assert.equal(r.engine.snapshot().entries[0].rebuilt,true);
+});
+
+test('requested page has priority over earlier unfinished pages',async()=>{
+    const r=rig([message('最早待整理',0),message('指定末頁',1)]);let requested;
+    r.host.complete=async(s,p)=>{requested=JSON.parse(p).text;return '{"summary":"重整了指定末頁"}';};
+    await r.engine.refresh(r.engine.snapshot().entries[1].ref);await r.engine.tick();
+    assert.equal(requested,'指定末頁');assert.equal(r.c.chat[0].extra[KEY],undefined);
+    assert.equal(bookPages(r.c.chat)[1].record.summary,'重整了指定末頁');
+});
+
+test('one-click rebuild summarizes every selected existing page exactly once, preserves pins and raw chat',async()=>{
+    const r=rig([message('玩家一',0,true),message('信件',1),message('玩家二',2,true),message('晚餐',3)]);ready(r);
+    bookPages(r.c.chat)[0].record.pinned=true;const source=r.c.chat.map(m=>m.mes);
+    await r.engine.refreshAll();for(let i=0;i<5;i++)await r.engine.tick();
+    assert.equal(r.stats().calls,2);assert.deepEqual(r.c.chat.map(m=>m.mes),source);assert.equal(bookPages(r.c.chat)[0].record.pinned,true);
+    assert.equal(r.engine.snapshot().rebuild.total,2);assert.equal(r.engine.snapshot().rebuild.done,2);assert.equal(r.engine.snapshot().rebuild.vectors,2);
+    assert.equal(r.c.chat[0].extra[KEY],undefined);assert.equal(r.c.chat[2].extra[KEY],undefined);
+});
+
+test('duplicate click does not enqueue a second rebuild or multiply API cost',async()=>{
+    const r=rig();ready(r);await r.engine.refreshAll();await assert.rejects(r.engine.refreshAll(),/已有重整任務/);
+    await r.engine.tick();await r.engine.tick();assert.equal(r.stats().calls,1);
+});
+
+test('completed receipt from an older revision cannot replace a forced rebuild',async()=>{
+    const r=rig();ready(r);const old=structuredClone(bookPages(r.c.chat)[0].record);
+    await r.engine.refreshAll();await r.cache.put('records','a:'+old.hash,old);await r.engine.tick();
+    assert.equal(r.stats().calls,1);assert.notEqual(bookPages(r.c.chat)[0].record.summary,old.summary);
+});
+
+test('manual rebuild resumes after reload with automatic memory off, without repeating completed pages',async()=>{
+    const r=rig([message('第一頁',0),message('第二頁',1)]);ready(r);r.engine.toggle(false);await r.engine.refreshAll();await r.engine.tick();
+    const other=new Engine(r.host,r.cache,r.embedder);other.schedule=()=>{};other.changed();
+    await other.tick();await other.tick();await other.tick();
+    assert.equal(r.stats().calls,2);assert.equal(other.snapshot().rebuild.complete,true);assert.equal(other.snapshot().rebuild.vectors,2);
+    assert.equal(r.host.settings().enabled,false);
+});
+
+test('failed rebuild retains previous summary and stopping restores it without erasing chat',async()=>{
+    const r=rig();ready(r);const old=bookPages(r.c.chat)[0].record.summary;r.engine.toggle(false);await r.engine.refreshAll();
+    r.host.complete=async()=>{throw new Error('fixture unavailable');};await r.engine.tick();
+    assert.equal(r.engine.snapshot().entries[0].summary,old);assert.equal(r.engine.snapshot().rebuild.pending,1);assert.match(r.engine.warning,/fixture unavailable/);
+    await r.engine.stopRebuild();assert.equal(bookPages(r.c.chat)[0].record.done,true);assert.equal(bookPages(r.c.chat)[0].record.summary,old);
+    assert.equal(r.engine.snapshot().rebuild.cancelled,1);await r.engine.tick();assert.equal(r.stats().calls,0);
+});
+
+test('stop keeps completed new summaries and restores only unfinished pages',async()=>{
+    const r=rig([message('原第一頁',0),message('原第二頁',1)]);ready(r);r.engine.toggle(false);await r.engine.refreshAll();await r.engine.tick();await r.engine.stopRebuild();
+    assert.match(bookPages(r.c.chat)[0].record.summary,/交換信物/);assert.equal(bookPages(r.c.chat)[1].record.summary,'原第二頁');
+    assert.equal(r.engine.snapshot().rebuild.done,1);assert.equal(r.engine.snapshot().rebuild.cancelled,1);assert.equal(r.engine.snapshot().rebuild.complete,true);
+});
+
+test('delete queued page before processing skips it and never assigns its job to the next floor',async()=>{
+    const r=rig([message('待刪頁',0),message('保留頁',1)]);ready(r);r.engine.toggle(false);await r.engine.refreshAll();
+    r.c.chat.splice(0,1);r.engine.changed({deleted:true});await r.engine.tick();await r.engine.tick();
+    assert.equal(r.stats().calls,1);assert.equal(r.engine.snapshot().rebuild.removed,1);assert.equal(r.engine.snapshot().rebuild.done,1);
+});
+
+test('rebuild waits for aborted in-flight summary before replacing its revision',async()=>{
+    const r=rig();let finish;r.host.complete=()=>new Promise(resolve=>{finish=resolve;});
+    const old=r.engine.tick();await new Promise(resolve=>setTimeout(resolve,0));const queued=r.engine.refreshAll();
+    finish('{"summary":"stale result"}');await old;await queued;
+    assert.equal(bookPages(r.c.chat)[0].record.done,false);assert.ok(bookPages(r.c.chat)[0].record.rebuild);
+    r.host.complete=async()=>'{"summary":"new result"}';await r.engine.tick();assert.equal(bookPages(r.c.chat)[0].record.summary,'new result');
+});
+
+test('rebuild transaction failure leaves original summaries untouched and unlocks controls',async()=>{
+    const r=rig();ready(r);const before=JSON.stringify(r.c.chat);r.cache.putMany=async()=>{throw Error('storage full');};
+    await assert.rejects(r.engine.refreshAll(),/storage full/);assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.resetting,false);assert.equal(r.cache.owner,null);
+});
+
+test('another tab lease or main generation gives a visible error before any reset',async()=>{
+    const r=rig();ready(r);const before=JSON.stringify(r.c.chat);r.cache.owner='other';await assert.rejects(r.engine.refreshAll(),/另一個視窗/);
+    assert.equal(JSON.stringify(r.c.chat),before);r.cache.owner=null;r.engine.generationStarted();await assert.rejects(r.engine.refreshAll(),/正文正在生成/);
+    assert.equal(JSON.stringify(r.c.chat),before);await assert.rejects(r.engine.refreshAll('different-chat'),/聊天已切換/);
+});
+
+test('manual vector failure reports fallback and does not repeat paid summaries endlessly',async()=>{
+    const r=rig();ready(r);r.engine.toggle(false);await r.engine.refreshAll();r.embedder.embed=async()=>{throw Error('wasm');};
+    for(let i=0;i<4;i++)await r.engine.tick();assert.equal(r.stats().calls,1);assert.equal(r.engine.snapshot().rebuild.complete,true);
+    assert.equal(r.engine.snapshot().rebuild.vectorFallback,true);assert.equal(r.engine.snapshot().rebuild.vectors,0);assert.match(r.engine.warning,/向量/);
+});
 test('background summary is idempotent across events and reopen',async()=>{
     const r=rig();await r.engine.tick();assert.equal(r.stats().calls,1);assert.ok(validRecord(r.c.chat[0]).done);
     await r.engine.tick();await r.engine.tick();r.engine.changed();await r.engine.tick();assert.equal(r.stats().calls,1);
