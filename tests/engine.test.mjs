@@ -122,6 +122,17 @@ test('background summary is idempotent across events and reopen',async()=>{
     await r.engine.tick();await r.engine.tick();r.engine.changed();await r.engine.tick();assert.equal(r.stats().calls,1);
     const engine=new Engine(r.host,r.cache,r.embedder);engine.schedule=()=>{};await engine.tick();assert.equal(r.stats().calls,1);
 });
+test('automatic progress reports pending pages, current phase, generation wait and completion',async()=>{
+    const r=rig([message('第一頁',0),message('第二頁',1)]);
+    r.host.complete=async(_system,prompt)=>{const text=JSON.parse(prompt).text;return JSON.stringify({summary:`${text}的摘要`});};
+    r.engine.changed();let auto=r.engine.snapshot().auto;
+    assert.equal(auto.active,true);assert.equal(auto.phase,'summary');assert.equal(auto.pendingSummaries,2);assert.equal(auto.done,0);assert.equal(auto.total,2);
+    r.engine.generationStarted();auto=r.engine.snapshot().auto;assert.equal(auto.active,true);assert.equal(auto.waitingForGeneration,true);r.engine.generationEnded();
+    await r.engine.tick();auto=r.engine.snapshot().auto;assert.equal(auto.ready,1);assert.equal(auto.pendingSummaries,1);assert.equal(auto.active,true);
+    await r.engine.tick();auto=r.engine.snapshot().auto;assert.equal(auto.ready,2);assert.equal(auto.indexed,1);assert.equal(auto.active,true);
+    await r.engine.tick();auto=r.engine.snapshot().auto;assert.equal(auto.active,false);assert.equal(auto.complete,true);assert.equal(auto.indexed,2);
+    r.engine.toggle(false);assert.equal(r.engine.snapshot().auto.available,false);
+});
 test('save gap recovers completed receipt without calling model again',async()=>{
     const r=rig();await r.engine.tick();delete r.c.chat[0].extra[KEY];await r.engine.tick();assert.equal(r.stats().calls,1);assert.ok(validRecord(r.c.chat[0]).done);
 });

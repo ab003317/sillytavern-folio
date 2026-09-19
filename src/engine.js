@@ -80,10 +80,16 @@ export class Engine {
             parts:p.record?.parts?.length??0,totalParts:splitBody(p.body).length,edited:!!p.record?.edited}));
         const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
         const chat=this.host.context().chat??[],usageRecords=this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(chat),chat.map(m=>m.is_system?'system':m.is_user?'user':'assistant')).filter(x=>x.resultState==='present'):[];
-        return {entries,total:entries.length,ready:entries.filter(p=>p.ready).length,indexed:entries.filter(p=>p.indexed).length,
+        const total=entries.length,ready=entries.filter(p=>p.ready).length,indexed=entries.filter(p=>p.indexed).length,rebuild=this.rebuildState();
+        const pendingSummaries=entries.filter(p=>!p.ready&&!p.rebuilding).length,pendingVectors=entries.filter(p=>p.ready&&!p.indexed&&!p.rebuilding).length;
+        const automatic=!!this.host.settings().enabled&&!!this.host.identity()&&this.host.context().mainApi==='openai'&&!this.conflict&&!rebuild?.pending;
+        const phase=this.work?.stage==='vector'?'vector':this.work?.stage==='summary'?'summary':pendingSummaries?'summary':pendingVectors?'vector':'complete';
+        const auto={active:automatic&&(!!this.work||pendingSummaries>0||pendingVectors>0),available:automatic,total,ready,indexed,phase,
+            done:phase==='vector'?indexed:ready,pendingSummaries,pendingVectors,current:this.work?{...this.work}:null,waitingForGeneration:this.generating,complete:total>0&&ready===total&&indexed===total};
+        return {entries,total,ready,indexed,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
-            resetting:this.resetting,rebuild:this.rebuildState(),generating:this.generating,chatIdentity:this.host.identity(),
+            resetting:this.resetting,rebuild,generating:this.generating,chatIdentity:this.host.identity(),auto,
             usages:usageRecords,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
     }

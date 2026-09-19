@@ -26,7 +26,7 @@ function ring(label,value,total,help,cls=''){
 
 export function mountUI(engine){
     const menu=document.querySelector('#extensionsMenu');if(!menu)throw new Error('找不到輸入欄魔法棒選單');
-    let state=engine.snapshot(),tab='run',selected=null,editing=false,shown=60,usageChoice='',usageChat='';
+    let state=engine.snapshot(),tab='run',selected=null,editing=false,shown=60,usageChoice='',usageChat='',autoWasActive=false,autoCompletion=false,autoTimer=null;
     const entry=button('',()=>open(),'list-group-item flex-container flexGap5 interactable');entry.id='folio-wand';
     const icon=el('i','fa-fw fa-solid fa-book-open extensionsMenuExtensionButton');icon.setAttribute('aria-hidden','true');
     const badge=el('span','folio-menu-status');entry.append(icon,el('span','','書頁記憶'),badge);menu.append(entry);
@@ -46,7 +46,12 @@ export function mountUI(engine){
         tabs.append(b);tabButtons[key]=b;const panel=el('section','folio-view');panel.id='folio-view-'+key;panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',b.id);panels[key]=panel;
     }
     const content=el('main','folio-content');content.append(...Object.values(panels));
-    dialog.append(top,status,warning,error,tabs,content);document.body.append(dialog);
+    dialog.append(top,status,warning,error,tabs,content);
+    const autoPopup=el('aside','folio-auto-popup'),autoPopupHead=el('div','folio-auto-popup-head'),autoPopupTitle=el('strong','folio-auto-popup-title'),autoPopupDetail=el('p','folio-auto-popup-detail'),autoPopupProgress=el('progress'),autoPopupActions=el('div','folio-auto-popup-actions');
+    autoPopup.hidden=true;autoPopup.setAttribute('role','region');autoPopup.setAttribute('aria-label','自動整理狀態');autoPopupDetail.setAttribute('aria-live','polite');autoPopupProgress.setAttribute('aria-label','自動整理進度');
+    const autoView=button('查看進度',()=>{open();setTab('run');}),autoRetry=button('立即重試',()=>engine.retry());
+    const autoMark=el('span','folio-auto-mark','書');autoMark.setAttribute('aria-hidden','true');autoPopupHead.append(autoMark,autoPopupTitle);autoPopupActions.append(autoView,autoRetry);autoPopup.append(autoPopupHead,autoPopupDetail,autoPopupProgress,autoPopupActions);
+    document.body.append(dialog,autoPopup);
     const perform=task=>async event=>{
         const b=event?.currentTarget;if(b)b.disabled=true;error.hidden=true;
         try{await task();}catch(e){error.textContent=e.message||'操作未完成，請稍後重試';error.hidden=false;}
@@ -74,6 +79,46 @@ export function mountUI(engine){
     dialog.addEventListener('close',()=>apiForms.conceal());
     function open(){state=engine.snapshot();update(state);if(!dialog.open)dialog.showModal();setTab(tab);tabButtons[tab].focus();}
     function setTab(key){tab=key;for(const k of Object.keys(labels)){panels[k].hidden=k!==key;tabButtons[k].setAttribute('aria-selected',String(k===key));tabButtons[k].tabIndex=k===key?0:-1;}render();}
+    function autoText(a=state.auto){
+        if(!a?.total)return '目前沒有角色正文需要整理。';
+        const counts=`摘要 ${a.ready}/${a.total} 頁 · 向量 ${a.indexed}/${a.total} 頁`;
+        if(!state.enabled)return `自動整理已暫停 · ${counts}`;
+        if(state.rebuild?.pending)return `手動重新整理進行中 · ${counts}`;
+        if(a.waitingForGeneration)return `等待這次角色回覆完成 · ${counts}`;
+        if(state.warning&&a.active)return `等待重試：${state.warning} · ${counts}`;
+        if(a.current?.stage==='summary')return `第 ${a.current.page} 頁 · 第 ${a.current.part}/${a.current.total} 段 · ${counts}`;
+        if(a.current?.stage==='vector')return `正在建立第 ${a.current.page} 頁向量 · ${counts}`;
+        if(a.pendingSummaries)return `${a.pendingSummaries} 頁等待寫入小摘要 · ${counts}`;
+        if(a.pendingVectors)return `${a.pendingVectors} 頁等待建立本機向量 · ${counts}`;
+        return `全部完成 · ${counts}`;
+    }
+    function setAutoProgress(progress,a=state.auto,complete=false){
+        const pages=a?.total??0,total=Math.max(1,pages*2),value=complete?total:Math.min(total,(a?.ready??0)+(a?.indexed??0));progress.max=total;progress.value=value;
+        progress.setAttribute('aria-valuetext',complete?'自動整理完成':autoText(a));
+    }
+    function autoPanel(){
+        const a=state.auto,section=el('section','folio-auto-run'),head=el('div','folio-auto-run-head'),title=el('strong','',!state.enabled?'自動整理已暫停':a?.active?'自動整理進度':a?.complete?'自動整理已完成':'自動整理進度'),detail=el('p','folio-muted',autoText(a)),progress=el('progress');
+        section.dataset.phase=a?.phase??'';
+        progress.setAttribute('aria-label','面板內自動整理進度');setAutoProgress(progress,a,!!a?.complete&&!a?.active);head.append(title);
+        if(state.warning&&a?.active)head.append(button('立即重試',()=>engine.retry()));section.append(head,detail,progress);return section;
+    }
+    function renderAutoPopup(){
+        const a=state.auto;
+        if(a?.active){
+            clearTimeout(autoTimer);autoCompletion=false;autoWasActive=true;autoPopup.hidden=false;autoPopup.classList.toggle('folio-auto-error',!!state.warning);
+            autoPopup.dataset.phase=a.phase??'';
+            autoPopupTitle.textContent=state.warning?'自動整理等待重試':a.waitingForGeneration?'自動整理等待回覆':a.current?'正在自動整理':'發現未整理書頁';
+            autoPopupDetail.textContent=autoText(a);setAutoProgress(autoPopupProgress,a);autoRetry.hidden=!state.warning;return;
+        }
+        if(autoWasActive){
+            autoWasActive=false;
+            if(a?.complete&&state.enabled&&!state.rebuild?.pending){
+                autoCompletion=true;autoPopup.hidden=false;autoPopup.classList.remove('folio-auto-error');autoPopupTitle.textContent='自動整理完成';autoPopupDetail.textContent=autoText(a);setAutoProgress(autoPopupProgress,a,true);autoRetry.hidden=true;
+                clearTimeout(autoTimer);autoTimer=setTimeout(()=>{autoCompletion=false;autoPopup.hidden=true;},2800);return;
+            }
+        }
+        if(!autoCompletion)autoPopup.hidden=true;
+    }
     function renderRun(){
         const intro=heading(state.rebuild?.pending?'正在重新整理書頁':state.enabled?'故事繼續，記憶在這裡接上':'自動記憶已暫停','一頁是一則角色正文，不是固定字數。長正文拆段總結後合成一頁；玩家輸入作為背景保留。手動重整不受自動開關影響。');
         const dashboard=el('div','folio-dashboard'),meters=el('div','folio-meters');
@@ -85,7 +130,7 @@ export function mountUI(engine){
         const actions=el('div','folio-toolbar');if(!state.enabled)actions.append(button('繼續自動整理',()=>{engine.toggle(true);engine.retry();}));actions.append(button('查看書頁',()=>setTab('pages')),button('記憶助手',()=>setTab('helper')));
         if(state.conflict)actions.append(button('改用書頁（停用 Anima 並刷新）',perform(()=>engine.host.useFolioInstead(state.conflict))));
         const activity=el('ul','folio-activity');for(const item of state.activity.slice(0,12)){const li=el('li');li.append(el('time','',stamp(item.time)),el('span','',item.message));activity.append(li);}
-        runBody.replaceChildren(intro,dashboard,actions);if(state.usageError)runBody.append(el('p','folio-usage-warning',state.usageError));runActivity.replaceChildren(heading('最近動作'),state.activity.length?activity:el('p','folio-muted','新的整理與查頁動作會自動出現在這裡。'));
+        runBody.replaceChildren(intro,autoPanel(),dashboard,actions);if(state.usageError)runBody.append(el('p','folio-usage-warning',state.usageError));runActivity.replaceChildren(heading('最近動作'),state.activity.length?activity:el('p','folio-muted','新的整理與查頁動作會自動出現在這裡。'));
     }
     function renderPages(){
         const q=search.value.trim().toLocaleLowerCase();const entries=state.entries.filter(e=>(filter.value!=='pending'||!e.ready)&&(filter.value!=='pinned'||e.pinned)&&[e.title,e.name,e.summary,e.body,e.playerInput].some(s=>String(s??'').toLocaleLowerCase().includes(q)));
@@ -160,8 +205,8 @@ export function mountUI(engine){
     function update(next){
         state=next;toggle.checked=next.enabled;toggleState.textContent=next.enabled?'已開啟':'已關閉';toggleLabel.dataset.enabled=String(next.enabled);status.textContent=next.status;warning.textContent=next.warning;warning.hidden=!next.warning;
         badge.textContent=next.conflict?'衝突暫停':!next.enabled?'暫停':`${next.ready}/${next.total}`;
-        entry.title=next.status;if(dialog.open)render();
+        entry.title=next.status;renderAutoPopup();if(dialog.open)render();
     }
     setTab('run');update(state);
-    return {update,open,dispose(){apiForms.dispose();entry.remove();dialog.remove();}};
+    return {update,open,dispose(){clearTimeout(autoTimer);apiForms.dispose();entry.remove();dialog.remove();autoPopup.remove();}};
 }
