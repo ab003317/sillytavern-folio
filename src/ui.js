@@ -32,8 +32,9 @@ export function mountUI(engine){
     const badge=el('span','folio-menu-status');entry.append(icon,el('span','','書頁記憶'),badge);menu.append(entry);
     const dialog=el('dialog','folio-dialog');dialog.setAttribute('aria-label','書頁記憶');
     const top=el('header','folio-top'),brand=el('div');brand.append(el('h2','folio-title','書頁記憶'),el('p','folio-subtitle','查目錄，取正文。故事照常聊，記憶在背後整理。'));
-    const toggleLabel=el('label','folio-toggle'),toggle=el('input');toggle.type='checkbox';toggle.setAttribute('aria-label','自動記憶');
-    toggle.addEventListener('change',()=>engine.toggle(toggle.checked));toggleLabel.append(toggle,document.createTextNode('自動記憶'));
+    const toggleLabel=el('label','folio-toggle'),toggle=el('input'),toggleTrack=el('span','folio-switch-track'),toggleCopy=el('span','folio-toggle-copy'),toggleState=el('strong','folio-toggle-state');
+    toggle.type='checkbox';toggle.setAttribute('role','switch');toggle.setAttribute('aria-label','自動記憶');toggleTrack.setAttribute('aria-hidden','true');toggleTrack.append(el('span','folio-switch-knob'));
+    toggleCopy.append(el('span','','自動記憶'),toggleState);toggle.addEventListener('change',()=>engine.toggle(toggle.checked));toggleLabel.append(toggle,toggleTrack,toggleCopy);
     top.append(brand,toggleLabel,button('關閉',()=>dialog.close(),'folio-close'));
     const status=el('p','folio-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
     const warning=el('p','folio-warning'),error=el('p','folio-warning');error.hidden=true;
@@ -157,7 +158,7 @@ export function mountUI(engine){
     }
     function render(){renderRebuild();if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}
     function update(next){
-        state=next;toggle.checked=next.enabled;status.textContent=next.status;warning.textContent=next.warning;warning.hidden=!next.warning;
+        state=next;toggle.checked=next.enabled;toggleState.textContent=next.enabled?'已開啟':'已關閉';toggleLabel.dataset.enabled=String(next.enabled);status.textContent=next.status;warning.textContent=next.warning;warning.hidden=!next.warning;
         badge.textContent=next.conflict?'衝突暫停':!next.enabled?'暫停':`${next.ready}/${next.total}`;
         entry.title=next.status;if(dialog.open)render();
     }

@@ -52,6 +52,9 @@ with sync_playwright() as p:
         assert version==json.loads((ROOT/'manifest.json').read_text(encoding='utf-8'))['version']
         page.locator('#extensionsMenuButton').click();page.locator('#folio-wand').click()
         assert page.get_by_role('progressbar',name='摘要目錄',exact=True).is_visible()
+        switch=page.get_by_role('switch',name='自動記憶',exact=True)
+        assert not switch.is_checked()
+        assert page.locator('.folio-toggle-state').inner_text()=='已關閉'
         page.get_by_role('button',name='關閉',exact=True).click()
         result=page.evaluate("""async prefix=>{
           const real=SillyTavern.getContext(),originalChat=JSON.stringify(real.chat),originalSettings=JSON.stringify(real.chatCompletionSettings);

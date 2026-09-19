@@ -126,7 +126,7 @@ with sync_playwright() as p:
         page.locator('#folio-wand').click();page.get_by_role('tab',name='記憶助手',exact=True).click()
         assert page.get_by_label('總結模型名稱',exact=True).input_value()=='fixture-summary'
         assert page.get_by_label('提取模型名稱',exact=True).input_value()=='fixture-extract'
-        page.get_by_role('checkbox',name='自動記憶').uncheck()
+        page.get_by_role('switch',name='自動記憶').uncheck()
         page.evaluate("testContext.chat.push({mes:'新故事。',name:'角色',is_user:false,send_date:'later',extra:{}});events.emit('MESSAGE_RECEIVED');")
         before=len(calls);page.wait_for_timeout(2300);assert len(calls)==before
         page.evaluate("localStorage.removeItem('folio-fixture-settings')")

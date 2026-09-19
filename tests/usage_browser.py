@@ -44,7 +44,10 @@ with sync_playwright() as p:
           for(const p of bookPages(testContext.chat)){const r=newRecord(p.message,p.playerInput);r.summary=p.body;r.title=['藍色信件的約定','碼頭道別','銀色鑰匙'][p.number-1];r.done=true;p.message.extra[KEY]=r;}
           await testContext.saveChat();await events.emit('CHAT_CHANGED');
         }""")
-        page.get_by_role('checkbox',name='自動記憶').check()
+        switch=page.get_by_role('switch',name='自動記憶');assert switch.is_checked()==False
+        assert page.locator('.folio-toggle-state').inner_text()=='已關閉'
+        switch.focus();page.keyboard.press('Space');assert switch.is_checked()
+        assert page.locator('.folio-toggle-state').inner_text()=='已開啟'
         page.get_by_role('tab',name='運行',exact=True).click()
         page.wait_for_function("document.querySelector('[aria-label=本機向量]').getAttribute('aria-valuenow')==='3'",timeout=120000)
         assert page.get_by_role('progressbar',name='摘要目錄',exact=True).get_attribute('aria-valuetext')=='3 / 3 頁，100%'
