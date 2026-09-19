@@ -3,6 +3,17 @@ export const VERSION = 2;
 export const MODEL = 'bge-small-zh-v1.5-int8:15b717c3:cls512:v1';
 export const KEY = 'folio_memory';
 
+const stampCache=new WeakMap(),messageIds=new WeakMap();let messageSequence=0;
+// Runtime handles are never floor numbers and never written into the user's story.
+export function messageHandle(message){if(!messageIds.has(message))messageIds.set(message,`m${++messageSequence}`);return messageIds.get(message);}
+export function messageStamp(message){
+    const meta=JSON.stringify([message.name,message.send_date,!!message.is_user,!!message.is_system,message.extra?.media,message.extra?.tool_invocations]);
+    const cached=stampCache.get(message);if(cached?.mes===message.mes&&cached.meta===meta)return cached.stamp;
+    const stamp=sha256(JSON.stringify([meta,message.mes]));stampCache.set(message,{mes:message.mes,meta,stamp});return stamp;
+}
+export function chatStamps(chat){return chat.map(messageStamp);}
+export function samePrefix(before,after){return Array.isArray(before)&&before.length<=after.length&&before.every((s,i)=>s===after[i]);}
+
 // Fingerprints are cache keys, not security hashes. Persisted source is checked as well.
 export function fingerprint(text) {
     let a = 2166136261, b = 2246822519;

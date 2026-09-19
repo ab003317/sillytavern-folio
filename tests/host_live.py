@@ -45,7 +45,7 @@ def route_request(route):
     if path=='/api/backends/chat-completions/generate':
         data=req.post_data_json
         prompt=json.dumps(data.get('messages',[]),ensure_ascii=False)
-        safe=(MARKER in prompt or ('連線測試' in prompt and '船長將藍色信件交給旅人，約定冬天前送到山城。' in prompt)) and len(calls)<6 and not data.get('stream')
+        safe=(MARKER in prompt or ('連線測試' in prompt and ('船長將藍色信件交給旅人，約定冬天前送到山城。' in prompt or '船長的信應在甚麼時候送到哪裡' in prompt))) and len(calls)<6 and not data.get('stream')
         if not safe:
             blocked.append(path);route.fulfill(status=403,body='Blocked non-fixture generation');return
         entry={'model':data.get('model'),'source':data.get('chat_completion_source')}
@@ -75,7 +75,7 @@ with sync_playwright() as p:
         page.goto(ORIGIN,wait_until='domcontentloaded',timeout=60000)
         page.wait_for_selector('#folio-wand',state='attached',timeout=60000)
         installed=page.evaluate("""async(prefix)=>({version:(await(await fetch(prefix+'manifest.json')).json()).version,wand:!!document.querySelector('#extensionsMenu #folio-wand')})""",PREFIX)
-        assert installed['version']=='0.2.0' and installed['wand'],installed
+        assert installed['version']=='0.3.0' and installed['wand'],installed
         page.locator('#extensionsMenuButton').click()
         page.locator('#folio-wand').click()
         page.locator('.folio-dialog').wait_for(state='visible')
@@ -97,10 +97,13 @@ with sync_playwright() as p:
             extensionSettings:{folio:{enabled:true,account:'synthetic-live-host',helperConnection:'auto'}},
             saveChat:async()=>{saves++;},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>Math.ceil(text.length*1.5)};
           const host=new Host(()=>fixture),cache=new Cache('folio-live-synthetic-'+Date.now()),embedder=new Embedder(cache);
+          const api=await host.api(),extractionModel=api.getChatCompletionModel(real.chatCompletionSettings);
+          host.configureHelper('selection','current',extractionModel);
+          if(host.helper('summary').model===extractionModel)throw Error('This acceptance requires two distinct existing models');
           let ui;const engine=new Engine(host,cache,embedder,state=>ui?.update(state));engine.schedule=()=>{};engine.changed();
           // Replace only this isolated browser's UI with the synthetic chat reader.
           document.querySelector('#folio-wand')?.remove();document.querySelector('.folio-dialog')?.remove();ui=mountUI(engine);
-          window.liveFixture={engine,ui,fixture,host,chat,dispose:()=>{engine.dispose();ui.dispose();}};
+          window.liveFixture={engine,ui,fixture,host,chat,cache,embedder,dispose:()=>{engine.dispose();ui.dispose();}};
           const settingsBefore=JSON.stringify(real.chatCompletionSettings);
           for(let i=0;i<4;i++){await engine.tick();if(engine.warning&&!engine.snapshot().ready)throw Error('First live summary failed: '+engine.warning);}
           if(engine.snapshot().ready!==3)throw Error('Live summaries incomplete: '+engine.warning+' / '+engine.status);
@@ -114,7 +117,7 @@ with sync_playwright() as p:
           try{await real.eventSource.emit(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,{type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});}
           finally{real.eventSource.removeListener(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,observe);}
           ui.open();
-          return {summaryCount:bookPages(chat).filter(p=>p.record?.done).length,summarySaves,helperModel:host.model,
+          return {summaryCount:bookPages(chat).filter(p=>p.record?.done).length,summarySaves,summaryModel:host.models.summary,extractionModel:host.models.selection,
             originalUntouched:source===JSON.stringify(chat),settingsUntouched:settingsBefore===JSON.stringify(real.chatCompletionSettings),
             vectorPages:engine.snapshot().indexed,aborted,mode:engine.last?.mode,candidateCount:engine.last?.candidates.length,
             selectedBlueLetter:core.some(m=>m.mes.includes('收件人是醫師林嵐')),historyReduced:core.length<chat.length,
@@ -132,16 +135,36 @@ with sync_playwright() as p:
         page.get_by_role('tab',name='本次取用').click()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-selection.png'))
         page.get_by_role('tab',name='記憶助手').click()
-        page.get_by_role('button',name='測試助手連線',exact=True).click()
-        page.wait_for_function("liveFixture.engine.connectionTest?.ok===true",timeout=65000)
-        result['helperButton']=True
+        page.get_by_role('button',name='測試總結模型',exact=True).click()
+        page.wait_for_function("liveFixture.engine.connectionTests.summary?.ok===true",timeout=65000)
+        page.get_by_role('button',name='測試提取模型',exact=True).click()
+        page.wait_for_function("liveFixture.engine.connectionTests.selection?.ok===true",timeout=65000)
+        result['bothModelButtons']=True
+        page.locator('.folio-content').evaluate('(e)=>e.scrollTop=0')
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-helper.png'))
         page.set_viewport_size({'width':390,'height':844})
         page.get_by_role('tab',name='書頁目錄').click()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-mobile.png'))
         assert page.locator('.folio-dialog').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
+        deletion=page.evaluate("""async(prefix)=>{
+          const {engine,host,chat,cache}=liveFixture,{bookPages}=await import(prefix+'src/core.js');
+          const core=structuredClone(chat),oldHash=bookPages(chat)[0].hash,survivorHashes=bookPages(chat).slice(1).map(p=>p.hash);
+          await engine.intercept(core,10000,()=>{throw Error('unexpected abort');},'normal');
+          chat.splice(0,2);engine.changed({deleted:true});await engine.maintenance;
+          const c=SillyTavern.getContext(),observe=body=>engine.captureFinal(body);c.eventSource.on(c.eventTypes.CHAT_COMPLETION_SETTINGS_READY,observe);
+          let blocked=false;
+          try{await(await host.api()).sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));}
+          catch(e){blocked=String(e.message).includes('生成已取消');}
+          finally{c.eventSource.removeListener(c.eventTypes.CHAT_COMPLETION_SETTINGS_READY,observe);}
+          await engine.tick();const pages=bookPages(chat);
+          return {blockedBeforeFetch:blocked,traceCleared:engine.last===null,remainingPages:pages.length,survivorsUnchanged:pages.every((p,i)=>p.record?.hash===survivorHashes[i]),deletedReceiptGone:!await cache.get('records',host.identity()+':'+oldHash),deletedAbsent:!engine.snapshot().entries.some(p=>p.body.includes('收件人是醫師林嵐'))};
+        }""",PREFIX)
+        assert deletion['blockedBeforeFetch'] and deletion['traceCleared'] and deletion['remainingPages']==2 and deletion['survivorsUnchanged'] and deletion['deletedReceiptGone'] and deletion['deletedAbsent'],deletion
+        assert len(calls)==6,calls
+        assert calls[0]['model']==result['summaryModel'] and calls[3]['model']==result['extractionModel'] and calls[4]['model']==result['summaryModel'] and calls[5]['model']==result['extractionModel'],calls
+        assert result['summaryModel']!=result['extractionModel'],result
         assert not [e for e in errors if 'folio' in e.lower()],errors
         page.evaluate('liveFixture.dispose()')
-        print(json.dumps({'passed':True,'installed':installed,'actual_host':result,'real_helper_calls':calls,'blocked_write_endpoints':sorted(set(blocked)),'unrelated_host_page_errors':len(errors)},ensure_ascii=False),flush=True)
+        print(json.dumps({'passed':True,'installed':installed,'actual_host':result,'deletion':deletion,'real_helper_calls':calls,'blocked_write_endpoints':sorted(set(blocked)),'unrelated_host_page_errors':len(errors)},ensure_ascii=False),flush=True)
     finally:
         browser.close()

@@ -8,6 +8,7 @@ class MemoryCache {
     constructor(){this.data=new Map();this.owner=null;}
     async get(s,k){return structuredClone(this.data.get(s+k));}
     async put(s,k,v){this.data.set(s+k,structuredClone(v));}
+    async pruneRecords(identity,hashes){const prefix='records'+identity+':',keep=new Set(hashes);for(const key of this.data.keys())if(key.startsWith(prefix)&&!keep.has(key.slice(prefix.length)))this.data.delete(key);}
     async lease(k,o,release=false){if(release){if(this.owner===o)this.owner=null;return false;}if(this.owner&&this.owner!==o)return false;this.owner=o;return true;}
     close(){}
 }
@@ -36,7 +37,7 @@ test('partial long-body receipt resumes only missing segments',async()=>{
     delete r.c.chat[0].extra[KEY];await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(validRecord(r.c.chat[0]).parts.length,2);
 });
 test('edits cause one new summary; reverting recovers its own cached version',async()=>{
-    const r=rig();await r.engine.tick();const old=r.c.chat[0].mes;r.c.chat[0].mes='改為森林的情節';r.engine.changed();await r.engine.tick();assert.equal(r.stats().calls,2);
+    const r=rig();r.engine.changed();await r.engine.tick();const old=r.c.chat[0].mes;r.c.chat[0].mes='改為森林的情節';r.engine.changed();await r.engine.tick();assert.equal(r.stats().calls,2);
     r.c.chat[0].mes=old;r.engine.changed();await r.engine.tick();assert.equal(r.stats().calls,2);
 });
 test('chat switch while request is pending never writes stale data',async()=>{
@@ -145,4 +146,80 @@ test('final request audit distinguishes removal and repeated text without double
 test('preview is side-effect free for chat and does not claim a final main request',async()=>{
     const r=rig();const before=JSON.stringify(r.c.chat);await r.engine.preview('試跑');
     assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.last.preview,true);assert.equal(r.engine.awaitingFinal,false);assert.equal(r.stats().saves,0);
+});
+
+test('deleting a middle pair removes its record/vector/trace without re-summarizing survivors',async()=>{
+    const r=rig([message('信件玩家',0,true),message('藍信約定',1),message('晚餐玩家',2,true),message('牛肉麵晚餐',3),message('住宿玩家',4,true),message('銀匙旅店',5)]);r.engine.changed();
+    const complete=r.host.complete;r.host.complete=async(s,p)=>{await complete(s,p);return JSON.stringify({summary:JSON.parse(p).text});};
+    for(let i=0;i<4;i++)await r.engine.tick();const old=bookPages(r.c.chat)[1].record,keep=bookPages(r.c.chat)[2].record;
+    await r.engine.intercept(structuredClone(r.c.chat),10000,()=>{},'normal');assert.ok(r.engine.last);
+    r.c.chat.splice(2,2);r.engine.changed({deleted:true});await r.engine.maintenance;
+    assert.equal(r.engine.last,null);assert.equal(await r.cache.get('records','trace:a'),null);assert.equal(await r.cache.get('records','a:'+old.hash),undefined);
+    assert.equal(r.engine.vectors.has(r.engine.vectorKey(old)),false);await r.engine.tick();assert.equal(r.stats().calls,3);
+    const pages=bookPages(r.c.chat);assert.equal(pages[1].index,3);assert.equal(pages[1].record.summary,keep.summary);
+    assert.equal(r.engine.snapshot().entries.some(p=>p.body.includes('牛肉麵')),false);
+});
+test('deleting a player input invalidates that page summary but not later complete pairs',async()=>{
+    const r=rig([message('願望一',0,true),message('角色一',1),message('願望二',2,true),message('角色二',3)]);await r.engine.tick();await r.engine.tick();
+    const second=bookPages(r.c.chat)[1].record.hash;r.c.chat.splice(0,1);r.engine.changed({deleted:true});
+    assert.equal(bookPages(r.c.chat)[0].record,null);assert.equal(bookPages(r.c.chat)[1].record.hash,second);
+    await r.engine.tick();assert.equal(r.stats().calls,3);assert.equal(r.engine.snapshot().ready,2);
+});
+test('deleting an assistant only re-associates orphan inputs and invalidates the affected next page',async()=>{
+    const r=rig([message('第一輸入',0,true),message('第一正文',1),message('第二輸入',2,true),message('第二正文',3)]);ready(r);
+    r.c.chat.splice(1,1);r.engine.changed({deleted:true});const p=bookPages(r.c.chat)[0];assert.equal(p.record,null);assert.equal(p.playerInput,'第一輸入\n第二輸入');
+});
+for(const withEvent of [true,false])test(`delete during slow selection cancels stale coreChat commit (event=${withEvent})`,async()=>{
+    const r=rig(Array.from({length:9},(_,i)=>message('信件情節。'.repeat(50),i,i%2===0)));ready(r);r.engine.changed();
+    let finish;r.host.complete=()=>new Promise(resolve=>{finish=resolve;});const core=structuredClone(r.c.chat),before=JSON.stringify(core);let aborted=false;
+    const pending=r.engine.intercept(core,1000,()=>{aborted=true;},'normal');await new Promise(resolve=>setTimeout(resolve,0));assert.ok(finish);
+    r.c.chat.splice(0,2);if(withEvent)r.engine.changed({deleted:true});finish('{"ids":["p1"]}');await pending;
+    assert.equal(aborted,true);assert.equal(JSON.stringify(core),before);assert.equal(r.engine.last,null);
+});
+test('delete during slow summary cannot attach its result to the new occupant of that floor',async()=>{
+    const r=rig([message('待刪正文',0),message('後一頁正文',1)]);let finish;r.host.complete=()=>new Promise(resolve=>{finish=resolve;});
+    const removed=r.c.chat[0],pending=r.engine.tick();await new Promise(resolve=>setTimeout(resolve,0));r.c.chat.splice(0,1);r.engine.changed({deleted:true});finish('{"summary":"待刪內容"}');await pending;
+    assert.equal(removed.extra[KEY],undefined);assert.equal(r.c.chat[0].extra[KEY],undefined);assert.equal(r.stats().saves,0);
+});
+test('stale reader operations fail instead of modifying the next page at the same floor',async()=>{
+    const r=rig([message('第一頁',0),message('第二頁',1)]);ready(r);const ref=r.engine.snapshot().entries[0].ref;
+    r.c.chat.splice(0,1);await assert.rejects(r.engine.pin(ref),/已刪除或變更/);await assert.rejects(r.engine.editSummary(ref,'錯誤摘要'),/已刪除或變更/);
+    assert.equal(r.c.chat[0].extra[KEY].pinned,false);assert.equal(r.c.chat[0].extra[KEY].summary,'第二頁');
+});
+test('a surviving reader handle follows its own message after earlier floors are deleted',async()=>{
+    const r=rig([message('第一頁',0),message('第二頁',1)]);ready(r);const ref=r.engine.snapshot().entries[1].ref;
+    r.c.chat.splice(0,1);await r.engine.pin(ref);assert.equal(r.c.chat[0].extra[KEY].pinned,true);
+});
+test('delete while a manual cache write is pending cannot trigger a stale chat save',async()=>{
+    const r=rig([message('第一頁',0),message('第二頁',1)]);ready(r);let finish;r.cache.put=()=>new Promise(resolve=>{finish=resolve;});
+    const pending=r.engine.pin(r.engine.snapshot().entries[0].ref);r.c.chat.splice(0,1);finish();await assert.rejects(pending,/已刪除或變更/);assert.equal(r.stats().saves,0);
+});
+test('reload validates persisted trace against current membership and prunes deleted receipts',async()=>{
+    const r=rig([message('舊頁',0),message('保留頁',1)]);await r.engine.tick();await r.engine.tick();const removed=bookPages(r.c.chat)[0].record;
+    await r.engine.intercept(structuredClone(r.c.chat),10000,()=>{},'normal');r.c.chat.splice(0,1);
+    const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await reopened.maintenance;await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(reopened.last,null);assert.equal(await r.cache.get('records','a:'+removed.hash),undefined);assert.match(reopened.snapshot().notice,/失效/);
+});
+test('new selection after deleting old pair cannot retrieve stale summary under shifted ID',async()=>{
+    const r=rig(Array.from({length:11},(_,i)=>message((i===1?'刪除機密':'保留信件')+'情節。'.repeat(60),i,i%2===0)));ready(r);
+    r.c.chat.splice(0,2);r.engine.changed({deleted:true});let catalogue;
+    r.host.complete=async(s,p)=>{catalogue=JSON.parse(p).catalogue;return '{"ids":["p1"]}';};const core=structuredClone(r.c.chat);
+    await r.engine.intercept(core,1800,()=>assert.fail('abort'),'normal');assert.ok(catalogue);assert.ok(!JSON.stringify(catalogue).includes('刪除機密'));assert.ok(!JSON.stringify(core).includes('刪除機密'));
+});
+test('ambiguous timestamp and body collisions are rejected, never guessed into the wrong floor',async()=>{
+    const r=rig([message('相同正文',0),message('相同正文',0)]);assert.equal(r.engine.sourceIndex(structuredClone(r.c.chat[0])),-1);
+    let aborted=false;await r.engine.intercept(structuredClone(r.c.chat),10000,()=>{aborted=true;},'normal');assert.equal(aborted,true);
+});
+test('delete after selection invalidates pending final request audit',async()=>{
+    const r=rig([message('舊頁',0),message('新頁',1)]),core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');
+    r.c.chat.splice(0,1);const body={type:'normal',messages:core.map(m=>({role:'assistant',content:m.mes}))};r.engine.captureFinal(body);assert.throws(()=>JSON.stringify(body),/生成已取消/);assert.equal(r.engine.last,null);assert.equal(r.engine.awaitingFinal,false);
+});
+test('delete event between interception and final assembly blocks sending even after UI invalidates trace',async()=>{
+    const r=rig([message('舊頁',0),message('新頁',1)]),core=structuredClone(r.c.chat);r.engine.changed();await r.engine.intercept(core,10000,()=>{},'normal');
+    r.c.chat.splice(0,1);r.engine.changed({deleted:true});assert.equal(r.engine.last,null);
+    let stopped=false;r.c.stopGeneration=()=>{stopped=true;};const body={type:'normal',messages:core.map(m=>({role:'assistant',content:m.mes}))};r.engine.captureFinal(body);assert.throws(()=>JSON.stringify(body),/生成已取消/);assert.equal(stopped,true);assert.deepEqual(body.messages,[]);
+});
+test('delete all followed by new floor zero cannot inherit deleted data',async()=>{
+    const r=rig();await r.engine.tick();r.c.chat.splice(0);r.engine.changed({deleted:true});await r.engine.maintenance;assert.equal(r.engine.snapshot().total,0);
+    r.c.chat.push(message('全新故事',0));await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(bookPages(r.c.chat)[0].record.hash,sourceOf(r.c.chat[0]).hash);
 });

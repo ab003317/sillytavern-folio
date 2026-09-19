@@ -43,5 +43,14 @@ export class Cache {
             tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error ?? new Error('記憶鎖交易中止'));
         });
     }
+    async pruneRecords(identity,hashes) {
+        const db=await this.open(),prefix=identity+':',keep=new Set(hashes);
+        return new Promise((resolve,reject)=>{
+            const tx=db.transaction('records','readwrite'),request=tx.objectStore('records').openCursor();
+            request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;const key=String(cursor.key);
+                if(key.startsWith(prefix)&&!keep.has(key.slice(prefix.length)))cursor.delete();cursor.continue();};
+            tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('記憶清理中止'));
+        });
+    }
     close() { this.opened?.then(db => db.close()).catch(() => {}); this.opened = null; }
 }

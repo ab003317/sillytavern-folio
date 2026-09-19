@@ -1,4 +1,5 @@
-import { chooseModel, estimatedTokens } from './core.js';
+import { estimatedTokens } from './core.js';
+export const MODEL_ROLES = {summary:'總結模型',selection:'提取模型'};
 
 export function helperPayload(model) {
     // ST's custom backend only forwards extra vendor fields through this YAML/JSON field.
@@ -23,7 +24,7 @@ export function uid() {
 
 export class Host {
     constructor(context = () => SillyTavern.getContext()) {
-        this.context = context; this.modules = null; this.rejected = new Set(); this.model = ''; this.counts = new Map();
+        this.context = context; this.modules = null; this.rejected = new Set(); this.model = ''; this.models={summary:'',selection:''}; this.counts = new Map();
     }
     async api() {
         // Isolate the one version-sensitive ST adapter; the rest uses getContext().
@@ -46,28 +47,39 @@ export class Host {
             c.extensionSettings.folio = { enabled:true, account:uid() }; c.saveSettingsDebounced();
         }
         const s=c.extensionSettings.folio;
-        s.account ||= uid(); s.helperConnection ??= 'auto'; s.helperModel ??= '';
+        s.account ||= uid();
+        if(!s.helpers){
+            const legacy=s.helperConnection??'auto',profiles=this.profiles();
+            const profile=legacy==='auto'?profiles.find(p=>/flash|mini|haiku|small|nano|[1378]b\b/i.test(`${p.name} ${p.model}`)):profiles.find(p=>p.id===legacy);
+            const o=c.chatCompletionSettings??{};
+            const model=s.helperModel||profile?.model||o[`${o.chat_completion_source}_model`]||'';
+            const connection=profile?.id||(legacy==='auto'?'current':legacy);
+            s.helpers={summary:{connection,model},selection:{connection,model}};
+            c.saveSettingsDebounced();
+        }
+        for(const role of Object.keys(MODEL_ROLES))s.helpers[role]??={connection:'current',model:''};
         return c.extensionSettings.folio;
     }
     profiles() {
         try { return this.context().ConnectionManagerRequestService?.getSupportedProfiles() ?? []; }
         catch { return []; }
     }
-    helper() {
-        const settings=this.settings(),profiles=this.profiles();
-        let profile=settings.helperConnection==='auto'
-            ? profiles.find(p=>/flash|mini|haiku|small|nano|[1378]b\b/i.test(`${p.name} ${p.model}`))
-            : profiles.find(p=>p.id===settings.helperConnection);
-        if(settings.helperConnection==='current')profile=null;
-        return {profile, model:settings.helperModel || profile?.model || '', label:profile?.name || '目前聊天連線', automatic:settings.helperConnection==='auto'};
+    helper(role='summary') {
+        if(!MODEL_ROLES[role])throw new Error('未知模型用途');
+        const config=this.settings().helpers[role],profile=config.connection==='current'?null:this.profiles().find(p=>p.id===config.connection);
+        return {profile,connection:config.connection,model:config.model.trim(),label:profile?.name||'目前聊天連線',role};
     }
-    configureHelper(connection, model = '') {
-        this.settings().helperConnection=connection;this.settings().helperModel=model.trim();
+    configureHelper(role,connection,model='') {
+        if(!MODEL_ROLES[role])throw new Error('未知模型用途');
+        if(!model.trim())throw new Error(`請填寫${MODEL_ROLES[role]}名稱`);
+        if(connection!=='current'&&!this.profiles().some(p=>p.id===connection))throw new Error('連線已不存在，請重新選擇');
+        this.settings().helpers[role]={connection,model:model.trim()};
         this.rejected.clear();this.context().saveSettingsDebounced();
     }
-    async modelChoices() {
-        const api=await this.api();const helper=this.helper();
-        if(helper.profile)return [...new Set([helper.profile.model,helper.model].filter(Boolean))];
+    async modelChoices(role='summary',connection=this.helper(role).connection) {
+        const helper=this.helper(role),profile=this.profiles().find(p=>p.id===connection);
+        if(profile)return [...new Set([profile.model,helper.model].filter(Boolean))];
+        const api=await this.api();
         return [...new Set([api.getChatCompletionModel(this.context().chatCompletionSettings),...(api.model_list??[]).map(x=>x.id)].filter(Boolean))];
     }
     identity() {
@@ -91,13 +103,14 @@ export class Host {
     async complete(system, prompt, {signal, selection = false} = {}) {
         const c = this.context();
         if (c.mainApi !== 'openai') throw new Error('目前先支援酒館的「聊天補全」連線；原本聊天不受影響');
-        const helper=this.helper();
-        if(!['auto','current'].includes(this.settings().helperConnection)&&!helper.profile)throw new Error('原助手連線已不存在，請在「記憶助手」重新選擇');
+        const role=selection?'selection':'summary',helper=this.helper(role),label=MODEL_ROLES[role];
+        if(!helper.model)throw new Error(`請在「記憶助手」填寫${label}`);
+        if(helper.connection!=='current'&&!helper.profile)throw new Error(`${label}的連線已不存在，請重新選擇`);
         if(helper.profile){
             const controller=new AbortController();const abort=()=>controller.abort(signal?.reason??new DOMException('Cancelled','AbortError'));
             signal?.throwIfAborted();signal?.addEventListener('abort',abort,{once:true});
             const timer=setTimeout(()=>controller.abort(new Error('記憶助手連線超時，稍後可重試')),selection?30000:60000);
-            this.model=helper.model;
+            this.model=helper.model;this.models[role]=helper.model;
             try{
                 const data=await c.ConnectionManagerRequestService.sendRequest(helper.profile.id,[{role:'system',content:system},{role:'user',content:prompt}],selection?1200:850,
                     {stream:false,signal:controller.signal,extractData:false,includePreset:false,includeInstruct:false},
@@ -111,14 +124,13 @@ export class Host {
         const original = structuredClone(c.chatCompletionSettings);
         const current = api.getChatCompletionModel(original);
         if (!current) throw new Error('等待酒館目前的模型連線');
-        const preferred = this.settings().helperModel || chooseModel(current, api.model_list ?? [], this.rejected);
         const controller = new AbortController();
         const abort = () => controller.abort(signal?.reason ?? new DOMException('Cancelled', 'AbortError'));
         signal?.throwIfAborted(); signal?.addEventListener('abort', abort, {once:true});
         const timer = setTimeout(() => controller.abort(new Error('摘要連線超時，稍後自動重試')), selection ? 30000 : 60000);
         try {
-            for (const model of [...new Set([preferred, current])]) {
-                controller.signal.throwIfAborted(); this.model = model;
+            for (const model of [helper.model]) {
+                controller.signal.throwIfAborted(); this.model = model;this.models[role]=model;
                 const settings = { ...original, stream_openai:false, openai_max_tokens:selection ? 1200 : 850,
                     temp_openai:.2, freq_pen_openai:0, pres_pen_openai:0, n:1, bias_preset_selected:'',
                     show_thoughts:false, enable_web_search:false, request_images:false, seed:-1 };
@@ -134,8 +146,7 @@ export class Host {
                 });
                 if (!response.ok) {
                     await response.body?.cancel();
-                    if ([400,404,422].includes(response.status) && model !== current) { this.rejected.add(model); continue; }
-                    throw new Error(`摘要連線回應 ${response.status}；${response.status === 429 ? '稍後自動重試' : '請檢查酒館原本的連線'}`);
+                    throw new Error(`${label}連線回應 ${response.status}；${response.status === 429 ? '稍後自動重試' : '請檢查該模型設定，不會改叫其他模型'}`);
                 }
                 const data = await response.json();
                 if(data.error)throw new Error('摘要連線回傳錯誤，請在記憶助手頁測試連線');

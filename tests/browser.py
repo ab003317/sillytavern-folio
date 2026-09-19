@@ -28,7 +28,7 @@ def route_request(route):
     if path=='/api/backends/chat-completions/generate':
         body=req.post_data_json
         calls.append(body)
-        assert body['model']=='fixture-mini'
+        assert body['model'] in ('fixture-mini','fixture-summary','fixture-extract')
         assert body['stream'] is False
         assert body['custom_url']=='https://existing-provider.invalid/v1'
         data=json.loads(body['messages'][-1]['content'])
@@ -97,8 +97,33 @@ with sync_playwright() as p:
         # Pause cancels background work; no orphan worker/server at shutdown.
         page.locator('#folio-wand').click()
         page.get_by_role('tab',name='記憶助手').click()
-        page.get_by_role('button',name='測試助手連線').click()
-        page.wait_for_function("document.querySelector('.folio-connection-result').textContent.includes('已回應')")
+        page.get_by_label('總結模型名稱',exact=True).fill('fixture-summary')
+        page.get_by_role('button',name='保存總結模型',exact=True).click()
+        page.get_by_label('提取模型名稱',exact=True).fill('fixture-extract')
+        page.get_by_role('button',name='保存提取模型',exact=True).click()
+        page.get_by_role('button',name='測試總結模型',exact=True).click()
+        page.wait_for_function("document.querySelectorAll('.folio-connection-result')[0].textContent.includes('測試通過')")
+        assert calls[-1]['model']=='fixture-summary'
+        page.get_by_role('button',name='測試提取模型',exact=True).click()
+        page.wait_for_function("document.querySelectorAll('.folio-connection-result')[1].textContent.includes('測試通過')")
+        assert calls[-1]['model']=='fixture-extract'
+        page.locator('.folio-content').evaluate('(e)=>e.scrollTop=0')
+        page.locator('.folio-dialog').screenshot(path=str(OUT/'models-mobile.png'))
+        page.set_viewport_size({'width':1100,'height':950})
+        page.locator('.folio-content').evaluate('(e)=>e.scrollTop=0')
+        page.locator('.folio-dialog').screenshot(path=str(OUT/'models-desktop.png'))
+        # Actual IndexedDB reconciliation, stale trace invalidation, and source floor shift.
+        page.evaluate("testContext.chat.splice(0,2);events.emit('MESSAGE_DELETED');testContext.saveChat();")
+        page.get_by_role('tab',name='本次取用',exact=True).click()
+        assert page.locator('.folio-view:not([hidden])').inner_text().find('失效')>=0
+        page.get_by_role('tab',name='書頁目錄',exact=True).click()
+        assert page.locator('.folio-page-link').count()==2
+        page.get_by_role('button',name='關閉',exact=True).click()
+        before=len(calls);page.reload();page.wait_for_function('window.fixtureReady===true');page.wait_for_timeout(2500)
+        assert len(calls)==before,'deletion/reload must not regenerate unaffected pages'
+        page.locator('#folio-wand').click();page.get_by_role('tab',name='記憶助手',exact=True).click()
+        assert page.get_by_label('總結模型名稱',exact=True).input_value()=='fixture-summary'
+        assert page.get_by_label('提取模型名稱',exact=True).input_value()=='fixture-extract'
         page.get_by_role('checkbox',name='自動記憶').uncheck()
         page.evaluate("testContext.chat.push({mes:'新故事。',name:'角色',is_user:false,send_date:'later',extra:{}});events.emit('MESSAGE_RECEIVED');")
         before=len(calls);page.wait_for_timeout(2300);assert len(calls)==before

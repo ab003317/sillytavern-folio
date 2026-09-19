@@ -92,17 +92,25 @@ with sync_playwright() as p:
             const source=JSON.stringify(chat), core=structuredClone(chat);
             window.folioIntercept=(...args)=>engine.intercept(...args);
             const aborted=await runGenerationInterceptors(core,4000,'normal');
+            const historyReduced=core.length<chat.length,selectedOriginal=core.some(m=>m.mes===chat[1].mes),latestPreserved=core.at(-1).mes===chat.at(-1).mes,originalUntouched=JSON.stringify(chat)===source;
+            // ST's event emitter swallows listener throws: exercise the actual send adapter.
+            chat.splice(0,2);engine.changed({deleted:true});
+            const observe=body=>engine.captureFinal(body);real.eventSource.on(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,observe);
+            let staleRequestBlocked=false;
+            try{const api=await host.api();await api.sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));}
+            catch(e){staleRequestBlocked=String(e.message).includes('生成已取消');}
+            finally{real.eventSource.removeListener(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,observe);}
             return {panel:!!document.querySelector('#folio-wand'),globalInterceptor:typeof previous==='function',
-              summarySaved:saves===1,originalUntouched:JSON.stringify(chat)===source,
+              summarySaved:saves===1,originalUntouched,staleRequestBlocked,
               settingsUntouched:before===JSON.stringify(real.chatCompletionSettings),aborted,
-              historyReduced:core.length<chat.length,selectedOriginal:core.some(m=>m.mes===chat[1].mes),
-              latestPreserved:core.at(-1).mes===chat.at(-1).mes,vectorDim:actualVectors[0].length};
+              historyReduced,selectedOriginal,latestPreserved,vectorDim:actualVectors[0].length};
           }finally{window.folioIntercept=previous;engine.dispose();}
         }""",PREFIX)
         assert result['panel'] and result['globalInterceptor'],result
         assert result['summarySaved'] and result['originalUntouched'] and result['settingsUntouched'],result
         assert not result['aborted'] and result['historyReduced'] and result['selectedOriginal'] and result['latestPreserved'],result
         assert result['vectorDim']==512,result
+        assert result['staleRequestBlocked'],result
         assert len(model_calls)==2,model_calls
         assert not [e for e in errors if 'folio' in e.lower()],errors
         print(json.dumps({'passed':True,'host_integration':result,'mock_model_calls':len(model_calls),'blocked_write_endpoints':sorted(set(blocked)),'unrelated_host_page_errors':len(errors)}),flush=True)

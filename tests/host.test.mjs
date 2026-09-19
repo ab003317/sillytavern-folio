@@ -18,3 +18,23 @@ test('connection-manager helper uses separate raw response, no preset, no global
     assert.ok(raw.includes('測試'));assert.equal(sent[3].extractData,false);assert.equal(sent[3].includePreset,false);
     assert.equal(sent[4].type,'quiet');assert.equal(JSON.parse(sent[4].custom_include_body).thinking.type,'disabled');assert.deepEqual(globalModel,{model:'main-model'});
 });
+
+test('summary and extraction use independent models and connections, migration happens once',async()=>{
+    const calls=[],c={mainApi:'openai',extensionSettings:{folio:{enabled:true,account:'test',helperConnection:'legacy',helperModel:'old-mini'}},chatCompletionSettings:{custom_model:'main'},saveSettingsDebounced(){},
+        ConnectionManagerRequestService:{getSupportedProfiles:()=>[{id:'legacy',name:'Legacy',model:'old-mini'},{id:'extract',name:'Extract',model:'extract-mini'}],sendRequest:async(...args)=>{calls.push(args);return {content:'{"summary":"x"}'};}}};
+    const host=new Host(()=>c);assert.notEqual(host.settings().helpers.summary,host.settings().helpers.selection);
+    host.configureHelper('summary','legacy','summary-only');host.configureHelper('selection','extract','extract-only');
+    await host.complete('s','summary');await host.complete('s','selection',{selection:true});
+    assert.deepEqual(calls.map(c=>[c[0],c[4].model]),[['legacy','summary-only'],['extract','extract-only']]);assert.deepEqual(host.models,{summary:'summary-only',selection:'extract-only'});
+    assert.equal(new Host(()=>c).helper('summary').model,'summary-only');assert.equal(new Host(()=>c).helper('selection').model,'extract-only');
+});
+test('empty or missing explicit model config never makes a paid fallback call',async()=>{
+    let called=0;const c={mainApi:'openai',extensionSettings:{folio:{account:'test',helpers:{summary:{connection:'current',model:''},selection:{connection:'gone',model:'chosen'}}}},saveSettingsDebounced(){},ConnectionManagerRequestService:{getSupportedProfiles:()=>[],sendRequest:async()=>{called++;}}};
+    const h=new Host(()=>c);await assert.rejects(h.complete('s','p'),/填寫總結模型/);await assert.rejects(h.complete('s','p',{selection:true}),/提取模型的連線已不存在/);assert.equal(called,0);
+});
+test('current-connection explicit model failure never calls the main model instead',async()=>{
+    const c={mainApi:'openai',extensionSettings:{folio:{account:'test',helpers:{summary:{connection:'current',model:'configured-summary'},selection:{connection:'current',model:'configured-extract'}}}},chatCompletionSettings:{custom_model:'main'},getRequestHeaders:()=>({}),saveSettingsDebounced(){}};
+    const h=new Host(()=>c);h.api=async()=>({getChatCompletionModel:s=>s.custom_model,createGenerationParameters:async(s,model,type,messages)=>({generate_data:{model,type,messages}})});
+    const old=globalThis.fetch,calls=[];globalThis.fetch=async(url,req)=>{calls.push(JSON.parse(req.body).model);return new Response('{}',{status:400});};
+    try{await assert.rejects(h.complete('s','p'),/總結模型連線回應 400/);assert.deepEqual(calls,['configured-summary']);}finally{globalThis.fetch=old;}
+});

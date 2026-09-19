@@ -20,7 +20,7 @@ const chat=Array.from({length:7},(_,i)=>({name:i%2?'船長':'玩家',is_user:i%2
  ][i],extra:{}}));
 const saved=localStorage.getItem('folio-fixture-chat');if(saved)chat.splice(0,chat.length,...JSON.parse(saved));
 window.testContext={chat,chatId:'fictional-fixture',characterId:0,characters:[{avatar:'synthetic.png'}],groupId:null,chatMetadata:{},mainApi:'openai',
- extensionSettings:JSON.parse(localStorage.getItem('folio-fixture-settings')||'{}'),eventSource:events,eventTypes,
+ extensionSettings:JSON.parse(localStorage.getItem('folio-fixture-settings')||'{"folio":{"enabled":true,"account":"fixture","helperConnection":"current","helperModel":"fixture-mini"}}'),eventSource:events,eventTypes,
  chatCompletionSettings:{chat_completion_source:'custom',custom_model:'fixture-large',custom_url:'https://existing-provider.invalid/v1',openai_max_tokens:2000,stream_openai:true},
  getRequestHeaders:()=>({'Content-Type':'application/json'}),getTokenCountAsync:async(text)=>Math.ceil(text.length*1.5),
  saveChat:async()=>{window.saves++;localStorage.setItem('folio-fixture-chat',JSON.stringify(chat));},
