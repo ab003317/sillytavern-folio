@@ -14,6 +14,7 @@ export class Engine {
         this.status='等待開啟聊天'; this.warning='';
         this.resetting=false;this.idle=Promise.resolve();
         this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.pendingUsage=null;
+        this.autoPages=new Set();this.seenPages=new Set();this.indexPages=new Set();
     }
     pages() { const identity=this.host.identity();return bookPages(this.host.context().chat ?? []).map(p=>({...p,identity})); }
     pendingRebuild(record){return !!record?.rebuild&&!record.rebuild.cancelled&&(!record.done||(!record.rebuild.indexed&&!record.rebuild.vectorFallback));}
@@ -73,19 +74,24 @@ export class Engine {
     }
     snapshot() {
         if(this.last&&!this.traceValid(this.last))this.invalidateTrace();
-        const entries=this.pages().map(p=>({index:p.index,ref:{chat:p.identity,handle:messageHandle(p.message),hash:p.hash},number:p.number,name:p.name,body:p.body,raw:p.message.mes,
+        const pages=this.pages(),entries=pages.map(p=>({index:p.index,ref:{chat:p.identity,handle:messageHandle(p.message),hash:p.hash},number:p.number,name:p.name,body:p.body,raw:p.message.mes,
             playerInput:p.playerInput,title:p.record?.title||p.record?.rebuild?.previous?.title||excerpt(p.body,32),summary:(!p.record?.done?p.record?.rebuild?.previous?.summary:'')||p.record?.summary||p.record?.parts?.join('\n')||'',
             ready:!!p.record?.done,indexed:!!p.record?.done&&this.vectors.has(this.vectorKey(p.record)),pinned:!!p.record?.pinned,
             rebuilding:this.pendingRebuild(p.record),rebuilt:!!p.record?.done&&!!p.record?.rebuild&&!p.record.rebuild.cancelled,previousSummary:!p.record?.done&&!!p.record?.rebuild?.previous?.summary,
-            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body).length,edited:!!p.record?.edited}));
+            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body).length,edited:!!p.record?.edited,automatic:this.autoPages.has(p.message)}));
         const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
         const chat=this.host.context().chat??[],usageRecords=this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(chat),chat.map(m=>m.is_system?'system':m.is_user?'user':'assistant')).filter(x=>x.resultState==='present'):[];
         const total=entries.length,ready=entries.filter(p=>p.ready).length,indexed=entries.filter(p=>p.indexed).length,rebuild=this.rebuildState();
-        const pendingSummaries=entries.filter(p=>!p.ready&&!p.rebuilding).length,pendingVectors=entries.filter(p=>p.ready&&!p.indexed&&!p.rebuilding).length;
+        const automaticEntries=entries.filter((_,i)=>this.autoPages.has(pages[i].message)),automaticTotal=automaticEntries.length;
+        const automaticReady=automaticEntries.filter(p=>p.ready).length,automaticIndexed=automaticEntries.filter(p=>p.indexed).length;
+        const pendingSummaries=automaticEntries.filter(p=>!p.ready&&!p.rebuilding).length,pendingVectors=automaticEntries.filter(p=>p.ready&&!p.indexed&&!p.rebuilding).length;
+        const manualPending=entries.filter((p,i)=>!this.autoPages.has(pages[i].message)&&!p.rebuilding&&!p.ready).length;
         const automatic=!!this.host.settings().enabled&&!!this.host.identity()&&this.host.context().mainApi==='openai'&&!this.conflict&&!rebuild?.pending;
+        const automaticWorking=!!this.work&&automaticEntries.some(p=>p.number===this.work.page);
         const phase=this.work?.stage==='vector'?'vector':this.work?.stage==='summary'?'summary':pendingSummaries?'summary':pendingVectors?'vector':'complete';
-        const auto={active:automatic&&(!!this.work||pendingSummaries>0||pendingVectors>0),available:automatic,total,ready,indexed,phase,
-            done:phase==='vector'?indexed:ready,pendingSummaries,pendingVectors,current:this.work?{...this.work}:null,waitingForGeneration:this.generating,complete:total>0&&ready===total&&indexed===total};
+        const auto={active:automatic&&automaticTotal>0&&(automaticWorking||pendingSummaries>0||pendingVectors>0),available:automatic,total:automaticTotal,ready:automaticReady,indexed:automaticIndexed,phase,
+            done:phase==='vector'?automaticIndexed:automaticReady,pendingSummaries,pendingVectors,manualPending,catalogueTotal:total,current:this.work?{...this.work}:null,
+            waitingForGeneration:this.generating,complete:automaticTotal>0&&automaticReady===automaticTotal&&automaticIndexed===automaticTotal};
         return {entries,total,ready,indexed,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
@@ -102,7 +108,7 @@ export class Engine {
         this.cancel();this.warning='';this.failures=0;
         const identity=this.host.identity(),stamps=chatStamps(this.host.context().chat??[]);
         if(identity!==this.currentIdentity){
-            this.vectors.clear();this.last=null;this.activity=[];this.notice='';this.currentIdentity=identity;const load=++this.traceLoad;
+            this.vectors.clear();this.autoPages.clear();this.indexPages.clear();this.last=null;this.activity=[];this.notice='';this.currentIdentity=identity;const load=++this.traceLoad;
             this.loadUsage(identity);
             if(identity)this.cache.get('records','trace:'+identity).then(trace=>{if(identity===this.currentIdentity&&load===this.traceLoad&&!this.last&&trace){
                 if(trace.final&&!trace.preview)this.rememberUsage(trace,identity);
@@ -113,14 +119,27 @@ export class Engine {
             this.log(deleted?'已刪除樓層：重新核對書頁；已發送紀錄保留':'正文已變更：待發送選頁失效，已發送紀錄保留');
             if(deleted)this.prune();
         }
+        const livePages=new Set(this.pages().map(p=>p.message));for(const set of [this.autoPages,this.indexPages])for(const message of set)if(!livePages.has(message))set.delete(message);this.seenPages=livePages;
         this.observedStamps=stamps;
-        this.setStatus(identity?'正在檢查書頁目錄':'等待開啟聊天');this.schedule();
+        this.setStatus(identity?'已就緒；舊聊天只在一鍵重新整理時處理':'等待開啟聊天');this.schedule();
+    }
+    newResponse({replacement=false}={}) {
+        this.responseReceived({replacement});const pages=this.pages(),live=new Map(pages.map(p=>[p.message,p]));
+        for(const message of this.autoPages)if(!live.has(message))this.autoPages.delete(message);
+        const unfinished=[...this.autoPages].some(message=>{const p=live.get(message),r=p?.record;return p&&(!r?.done||!this.vectors.has(this.vectorKey(r)));});
+        if(!unfinished)this.autoPages.clear();
+        const candidates=pages.filter(p=>!this.seenPages.has(p.message));if(replacement&&pages.length&&!candidates.includes(pages.at(-1)))candidates.push(pages.at(-1));
+        const allowed=this.host.settings().enabled&&!!this.host.identity()&&this.host.context().mainApi==='openai'&&!this.conflict;
+        if(allowed)for(const p of candidates)this.autoPages.add(p.message);
+        this.seenPages=new Set(pages.map(p=>p.message));
+        if(allowed&&candidates.length)this.setStatus(`新回覆已加入自動整理；舊聊天不會自動處理`);else this.emit();
+        this.schedule();
     }
     generationStarted() { this.generating=true;this.generationGuard=null;this.controller?.abort();this.emit(); }
     generationEnded() { this.generating=false;this.selectController?.abort();this.emit();this.schedule(); }
     toggle(enabled) {
         this.host.settings().enabled=enabled;this.host.context().saveSettingsDebounced();this.cancel();
-        if(!enabled)this.embedder.stop();this.setStatus(enabled?'正在檢查書頁目錄':this.rebuildState()?.pending?'自動記憶已暫停；手動重整仍會繼續':'已暫停；使用酒館原本的歷史');this.schedule();
+        if(!enabled)this.embedder.stop();this.setStatus(enabled?'已開啟；只會處理接下來的新回覆':this.rebuildState()?.pending?'新回覆自動記憶已暫停；手動重整仍會繼續':'已暫停；舊聊天保持原狀');this.schedule();
     }
     retry() { this.failures=0;this.vectorRetryAt=0;this.warning='';this.schedule(0);this.emit(); }
     assertPage(page){if(page.identity!==this.host.identity()||this.pages().find(p=>p.message===page.message)?.source!==page.source)throw new DOMException('這頁已刪除或變更，操作已取消','AbortError');}
@@ -196,23 +215,26 @@ export class Engine {
         const p=this.resolvePage(index),text=cleanBody(summary).slice(0,3000);if(!text)throw new Error('摘要不能為空白');
         this.cancel();const r=structuredClone(p.record??newRecord(p.message,p.playerInput));
         Object.assign(r,{summary:text,parts:[text],done:true,edited:true,title:r.title||excerpt(text,32)});
-        await this.savePage(p,r);this.log(`已保存第 ${p.number} 頁的人工摘要`);this.retry();
+        await this.savePage(p,r);this.indexPages.add(p.message);this.log(`已保存第 ${p.number} 頁的人工摘要`);this.retry();
     }
     vectorKey(record) { return MODEL+':'+fingerprint(record.summary); }
     async tick() {
         if(this.conflict)return;
-        const manual=this.pages().filter(p=>this.pendingRebuild(p.record)),manualMode=manual.length>0;
-        if(this.disposed||this.resetting||this.running||this.generating||this.selectController||(!this.host.settings().enabled&&!manualMode)){this.schedule();return;}
+        const pages=this.pages(),manual=pages.filter(p=>this.pendingRebuild(p.record)),manualMode=manual.length>0;
+        const requestedIndexes=pages.filter(p=>this.indexPages.has(p.message)&&p.record?.done&&!this.vectors.has(this.vectorKey(p.record))),indexMode=!manualMode&&requestedIndexes.length>0;
+        if(this.disposed||this.resetting||this.running||this.generating||this.selectController||(!this.host.settings().enabled&&!manualMode&&!indexMode)){this.schedule();return;}
         const c=this.host.context(),identity=this.host.identity();
         if(!identity||!c.chat?.length){this.setStatus('等待開啟聊天');return;}
         if(c.mainApi!=='openai'){this.setStatus('等待「聊天補全」連線');return;}
+        const automatic=pages.filter(p=>this.autoPages.has(p.message)&&(!p.record?.done||!this.vectors.has(this.vectorKey(p.record))));
+        if(!manualMode&&!indexMode&&!automatic.length){this.setStatus('已就緒；只會自動整理接下來的新回覆');this.schedule(15000);return;}
         this.running=true;let idleDone;this.idle=new Promise(resolve=>{idleDone=resolve;});const controller=new AbortController();this.controller=controller;
         const epoch=this.epoch,signal=controller.signal;let locked=false,renew=null,nextDelay=700;
         const active=p=>{
             signal.throwIfAborted();
             const current=this.pages().find(x=>x.message===p.message);
-            if(this.disposed||epoch!==this.epoch||identity!==this.host.identity()||(!this.host.settings().enabled&&!manualMode)||
-                current?.source!==p.source||(current.record?.revision??'')!==(p.record?.revision??''))throw new DOMException('Changed','AbortError');
+            if(this.disposed||epoch!==this.epoch||identity!==this.host.identity()||current?.source!==p.source||
+                (current.record?.revision??'')!==(p.record?.revision??'')||(!this.host.settings().enabled&&!manualMode&&!indexMode))throw new DOMException('Changed','AbortError');
         };
         try{
             await this.maintenance;signal.throwIfAborted();
@@ -220,7 +242,7 @@ export class Engine {
             if(!locked){this.setStatus('另一個視窗正在整理；這裡會自動更新');nextDelay=5000;return;}
             renew=setInterval(()=>this.cache.lease(identity,this.owner).then(ok=>{if(!ok)controller.abort();}).catch(()=>controller.abort()),25000);
             let target=null;
-            for(const p of manualMode?manual:this.pages()){
+            for(const p of manualMode?manual:indexMode?requestedIndexes:automatic){
                 let r=p.record;
                 if(!r){r=migrateRecord(p);if(r){active(p);await this.savePage(p,r);this.log(`沿用第 ${p.number} 頁已有的摘要`);}}
                 const cached=!r?.done?await this.cache.get('records',identity+':'+p.hash):null;active(p);
@@ -234,8 +256,9 @@ export class Engine {
                     catch(e){active(p);this.vectorRetryAt=Date.now()+60000;this.warning='向量暫不可用；摘要繼續整理，暫時使用文字檢索';}
                 }
                 if(manualMode){r.rebuild.indexed=this.vectors.has(this.vectorKey(r));r.rebuild.vectorFallback=!r.rebuild.indexed;await this.savePage(p,r);active(p);}
+                if(indexMode&&this.vectors.has(this.vectorKey(r)))this.indexPages.delete(p.message);
             }
-            if(!target){this.work=null;this.setStatus(manualMode?this.warning?'重整摘要已完成；向量暫用文字檢索':'本次重新整理已完成':'已就緒；新正文會自動整理');nextDelay=manualMode?700:15000;return;}
+            if(!target){this.work=null;this.setStatus(manualMode?this.warning?'重整摘要已完成；向量暫用文字檢索':'本次重新整理已完成':indexMode?this.warning?'人工摘要已保存；向量暫用文字檢索':'人工摘要與向量已就緒':'已就緒；只會自動整理接下來的新回覆');nextDelay=manualMode?700:15000;return;}
             const p=target,r=p.record,parts=splitBody(p.body);
             this.work={stage:'summary',page:p.number,part:r.parts.length+1,total:parts.length};
             this.setStatus(`正在整理第 ${p.number} 頁（${r.parts.length+1}/${parts.length} 段）`);active(p);

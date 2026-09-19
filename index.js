@@ -24,9 +24,9 @@ async function initialize() {
 const events = context.eventTypes;
 on(events.APP_READY ?? events.APP_INITIALIZED, initialize);
 for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_SENT']) on(events[name],()=>engine.changed());
-on(events.MESSAGE_SWIPED,()=>{engine.responseReceived({replacement:true});engine.changed();});
+on(events.MESSAGE_SWIPED,()=>{engine.newResponse({replacement:true});engine.changed();});
 on(events.MESSAGE_DELETED,()=>engine.changed({deleted:true}));
-for (const name of ['MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED']) on(events[name],()=>{engine.responseReceived();engine.emit();engine.schedule();});
+for (const name of ['MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED']) on(events[name],()=>engine.newResponse());
 on(events.USER_MESSAGE_RENDERED,()=>{engine.emit();engine.schedule();});
 on(events.GENERATION_STARTED,()=>engine.generationStarted());
 on(events.GENERATION_ENDED,()=>engine.generationEnded());

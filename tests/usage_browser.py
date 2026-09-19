@@ -44,18 +44,22 @@ with sync_playwright() as p:
           for(const p of bookPages(testContext.chat)){const r=newRecord(p.message,p.playerInput);r.summary=p.body;r.title=['藍色信件的約定','碼頭道別','銀色鑰匙'][p.number-1];r.done=true;p.message.extra[KEY]=r;}
           await testContext.saveChat();await events.emit('CHAT_CHANGED');
         }""")
-        switch=page.get_by_role('switch',name='自動記憶');assert switch.is_checked()==False
+        switch=page.get_by_role('switch',name='新回覆自動記憶');assert switch.is_checked()==False
         assert page.locator('.folio-toggle-state').inner_text()=='已關閉'
         switch.focus();page.keyboard.press('Space');assert switch.is_checked()
         assert page.locator('.folio-toggle-state').inner_text()=='已開啟'
+        # Enabling automatic memory must not index or summarize the already-open old chat.
         page.get_by_role('tab',name='運行',exact=True).click()
-        page.wait_for_function("document.querySelector('[aria-label=本機向量]').getAttribute('aria-valuenow')==='3'",timeout=120000)
+        page.wait_for_timeout(2200)
+        assert page.get_by_role('progressbar',name='本機向量',exact=True).get_attribute('aria-valuenow')=='0'
         assert page.get_by_role('progressbar',name='摘要目錄',exact=True).get_attribute('aria-valuetext')=='3 / 3 頁，100%'
         page.evaluate("""async()=>{
+          const {newRecord,bookPages,KEY}=await import('/folio/src/core.js');
           const core=structuredClone(testContext.chat);await folioIntercept(core,10000,()=>{throw Error('aborted');},'normal');
           // Simulate host cropping one original body. Uncertain content must not be labelled used.
           await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:core.filter((m,i)=>i!==3).map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
-          testContext.chat.push({mes:'第一個合成角色回覆',is_user:false,name:'船長',send_date:'first-result',extra:{}});
+          const reply={mes:'第一個合成角色回覆',is_user:false,name:'船長',send_date:'first-result',extra:{}};testContext.chat.push(reply);
+          const page=bookPages(testContext.chat).at(-1),record=newRecord(reply,page.playerInput);record.summary=reply.mes;record.done=true;reply.extra[KEY]=record;
           await events.emit('MESSAGE_RECEIVED');
           await events.emit('GENERATION_ENDED');
         }""")
@@ -71,10 +75,12 @@ with sync_playwright() as p:
         # A second real request becomes latest only after its resulting assistant floor exists.
         old_text=page.locator('.folio-usage-bar select').inner_text()
         page.evaluate("""async()=>{
+          const {newRecord,bookPages,KEY}=await import('/folio/src/core.js');
           testContext.chat.push({mes:'第二次合成提問',is_user:true,name:'玩家',send_date:'second-user',extra:{}});await events.emit('MESSAGE_SENT');
           const core=structuredClone(testContext.chat);await folioIntercept(core,10000,()=>{throw Error('aborted');},'normal');
           await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
-          testContext.chat.push({mes:'第二個合成角色回覆',is_user:false,name:'船長',send_date:'second-result',extra:{}});await events.emit('MESSAGE_RECEIVED');
+          const reply={mes:'第二個合成角色回覆',is_user:false,name:'船長',send_date:'second-result',extra:{}};testContext.chat.push(reply);
+          const page=bookPages(testContext.chat).at(-1),record=newRecord(reply,page.playerInput);record.summary=reply.mes;record.done=true;reply.extra[KEY]=record;await events.emit('MESSAGE_RECEIVED');
         }""")
         page.wait_for_function("document.querySelectorAll('.folio-usage-bar option').length===2")
         assert '第二次合成提問' in page.locator('#folio-view-selection details').first.text_content()
@@ -100,8 +106,10 @@ with sync_playwright() as p:
         assert page.locator('.folio-usage-bar select option').count()==1
         assert page.locator('.folio-source-missing').count()==2
         page.evaluate("""async()=>{
+          const {newRecord,bookPages,KEY}=await import('/folio/src/core.js');
           await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:nextCore.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
-          testContext.chat.push({mes:'第三個合成角色回覆',is_user:false,name:'船長',send_date:'third-result',extra:{}});await events.emit('MESSAGE_RECEIVED');
+          const reply={mes:'第三個合成角色回覆',is_user:false,name:'船長',send_date:'third-result',extra:{}};testContext.chat.push(reply);
+          const page=bookPages(testContext.chat).at(-1),record=newRecord(reply,page.playerInput);record.summary=reply.mes;record.done=true;reply.extra[KEY]=record;await events.emit('MESSAGE_RECEIVED');
         }""")
         page.wait_for_function("document.querySelectorAll('.folio-usage-bar select option').length===2")
         assert page.locator('.folio-source-missing').count()==0

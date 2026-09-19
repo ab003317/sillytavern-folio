@@ -66,11 +66,17 @@ with sync_playwright() as p:
         assert inference['dim']==512 and abs(inference['norm']-1)<0.001,inference
         assert inference['related']>inference['unrelated'],inference
         print(json.dumps({'real_inference':inference}),flush=True)
+        # Opening an existing chat must never backfill it automatically.
+        page.wait_for_timeout(2300)
+        assert len(calls)==0,'old chat must wait for the player to start one-click rebuild'
+        assert not page.locator('.folio-auto-popup').is_visible()
+        page.locator('#folio-wand').click()
+        assert '舊聊天有 3 頁尚未整理' in page.locator('.folio-auto-run').inner_text()
+        page.get_by_role('button',name='一鍵重新整理全部',exact=True).first.click()
         page.wait_for_function('testContext.chat.filter(m=>!m.is_user).every(m=>m.extra.folio_memory?.done)',timeout=120000)
         assert len([c for c in calls if 'text' in json.loads(c['messages'][-1]['content'])])==3,len(calls)
         assert page.evaluate('testContext.chatCompletionSettings.custom_model')=='fixture-large'
         assert not page.evaluate('JSON.stringify(testContext.chat.map(m=>m.extra.folio_memory)).includes("不應被保存的推理")')
-        page.locator('#folio-wand').click()
         page.get_by_role('tab',name='書頁目錄').click()
         page.locator('.folio-page-link').first.click()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'desktop.png'))
@@ -130,7 +136,7 @@ with sync_playwright() as p:
         page.locator('#folio-wand').click();page.get_by_role('tab',name='記憶助手',exact=True).click()
         assert page.get_by_label('總結模型名稱',exact=True).input_value()=='fixture-summary'
         assert page.get_by_label('提取模型名稱',exact=True).input_value()=='fixture-extract'
-        page.get_by_role('switch',name='自動記憶').uncheck()
+        page.get_by_role('switch',name='新回覆自動記憶').uncheck()
         page.evaluate("testContext.chat.push({mes:'新故事。',name:'角色',is_user:false,send_date:'later',extra:{}});events.emit('MESSAGE_RECEIVED');")
         before=len(calls);page.wait_for_timeout(2300);assert len(calls)==before
         page.evaluate("localStorage.removeItem('folio-fixture-settings')")

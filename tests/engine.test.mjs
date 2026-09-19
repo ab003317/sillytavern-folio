@@ -18,13 +18,13 @@ class MemoryCache {
 function message(text,i=0,user=false){return {mes:text,name:user?'玩家':'角色',is_user:user,send_date:`t${i}`,extra:{}};}
 function ready(r){for(const p of bookPages(r.c.chat)){const x=newRecord(p.message,p.playerInput);x.summary=p.body;x.done=true;p.message.extra[KEY]=x;r.engine.vectors.set(r.engine.vectorKey(x),[[1,0]]);}}
 function rig(messages=[message('港口的兩人交換信物，約定明日再見。')]) {
-    const c={chat:messages,chatId:'a',mainApi:'openai',saveSettingsDebounced(){}};
+    const c={chat:[],chatId:'a',mainApi:'openai',saveSettingsDebounced(){}};
     const settings={enabled:true};let calls=0,saves=0;
     const host={context:()=>c,identity:()=>c.chatId,settings:()=>settings,model:'fixture-mini',
         count:async text=>text.length,save:async()=>{saves++;},complete:async(system,prompt)=>{calls++;return '{"summary":"兩人在港口交換信物，約定明日再見。"}';}};
     const cache=new MemoryCache();
     const embedder={embed:async texts=>texts.map(()=>[1,0]),stop(){}};
-    const engine=new Engine(host,cache,embedder);engine.schedule=()=>{};
+    const engine=new Engine(host,cache,embedder);engine.schedule=()=>{};engine.changed();c.chat.push(...messages);engine.newResponse();
     return {engine,host,cache,embedder,c,stats:()=>({calls,saves})};
 }
 
@@ -132,6 +132,26 @@ test('automatic progress reports pending pages, current phase, generation wait a
     await r.engine.tick();auto=r.engine.snapshot().auto;assert.equal(auto.ready,2);assert.equal(auto.indexed,1);assert.equal(auto.active,true);
     await r.engine.tick();auto=r.engine.snapshot().auto;assert.equal(auto.active,false);assert.equal(auto.complete,true);assert.equal(auto.indexed,2);
     r.engine.toggle(false);assert.equal(r.engine.snapshot().auto.available,false);
+});
+test('opening unfinished old chat never summarizes until one-click rebuild',async()=>{
+    const r=rig([message('舊聊天正文一',0),message('舊聊天正文二',1)]);r.c.chatId='opened-old-chat';r.engine.changed();
+    await r.engine.tick();await r.engine.tick();assert.equal(r.stats().calls,0);assert.equal(bookPages(r.c.chat).every(p=>!p.record),true);
+    assert.equal(r.engine.snapshot().auto.active,false);assert.equal(r.engine.snapshot().auto.manualPending,2);
+    await r.engine.refreshAll();await r.engine.tick();await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(bookPages(r.c.chat).every(p=>p.record?.done),true);
+});
+test('only a response arriving after the old-chat boundary is automatic',async()=>{
+    const r=rig([message('舊正文',0)]);r.c.chatId='old-plus-new';r.engine.changed();r.c.chat.push(message('新問題',1,true),message('新回覆',2));r.engine.newResponse();
+    await r.engine.tick();assert.equal(r.stats().calls,1);const pages=bookPages(r.c.chat);assert.equal(pages[0].record,null);assert.equal(pages[1].record?.done,true);
+    assert.equal(r.engine.snapshot().auto.manualPending,1);
+});
+test('responses received while automatic memory is off stay manual after re-enabling',async()=>{
+    const r=rig([]);r.engine.toggle(false);r.c.chat.push(message('關閉期間的回覆',0));r.engine.newResponse();r.engine.toggle(true);await r.engine.tick();
+    assert.equal(r.stats().calls,0);assert.equal(bookPages(r.c.chat)[0].record,null);assert.equal(r.engine.snapshot().auto.manualPending,1);
+});
+test('editing an old summary explicitly indexes it even while automatic memory is off',async()=>{
+    const r=rig();r.c.chatId='edit-old';r.engine.changed();r.engine.toggle(false);const ref=r.engine.snapshot().entries[0].ref;
+    await r.engine.editSummary(ref,'玩家手動寫入的舊頁摘要');await r.engine.tick();
+    assert.equal(r.stats().calls,0);assert.equal(r.engine.snapshot().entries[0].indexed,true);assert.equal(bookPages(r.c.chat)[0].record.edited,true);
 });
 test('save gap recovers completed receipt without calling model again',async()=>{
     const r=rig();await r.engine.tick();delete r.c.chat[0].extra[KEY];await r.engine.tick();assert.equal(r.stats().calls,1);assert.ok(validRecord(r.c.chat[0]).done);
@@ -325,14 +345,14 @@ test('delete event between interception and final assembly blocks sending even a
 });
 test('delete all followed by new floor zero cannot inherit deleted data',async()=>{
     const r=rig();await r.engine.tick();r.c.chat.splice(0);r.engine.changed({deleted:true});await r.engine.maintenance;assert.equal(r.engine.snapshot().total,0);
-    r.c.chat.push(message('全新故事',0));await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(bookPages(r.c.chat)[0].record.hash,sourceOf(r.c.chat[0]).hash);
+    r.c.chat.push(message('全新故事',0));r.engine.newResponse();await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(bookPages(r.c.chat)[0].record.hash,sourceOf(r.c.chat[0]).hash);
 });
 
 let sentSequence=0;
 async function sent(r,label='生成回覆'){
     const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('aborted'),'normal');
     r.engine.captureFinal({type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
-    const sequence=++sentSequence;r.c.chat.push(message(`${label}-${sequence}`,1000+sequence));r.engine.responseReceived();
+    const sequence=++sentSequence;r.c.chat.push(message(`${label}-${sequence}`,1000+sequence));r.engine.newResponse();
     await r.engine.usageWrite;return structuredClone(r.engine.snapshot().usages[0]);
 }
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0));

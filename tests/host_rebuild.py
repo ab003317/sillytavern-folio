@@ -75,7 +75,7 @@ with sync_playwright() as p:
         assert page.evaluate('rebuildFixture.engine.rebuildState()?.complete'),page.evaluate('rebuildFixture.engine.warning')
         assert len(calls)==1 and calls[0].get('contentLength',0)>0,calls
         assert page.locator('.folio-page-work').inner_text()=='此頁已重新整理完成。'
-        assert not page.get_by_label('自動記憶',exact=True).is_checked()
+        assert not page.get_by_label('新回覆自動記憶',exact=True).is_checked()
         page.get_by_role('button',name='一鍵重新整理全部',exact=True).click()
         page.wait_for_function('(!rebuildFixture.engine.resetting && rebuildFixture.engine.rebuildState()?.total===2 && rebuildFixture.engine.rebuildState()?.complete)||!!rebuildFixture.engine.warning',timeout=130000)
         assert page.evaluate('rebuildFixture.engine.rebuildState()?.done')==2,page.evaluate('rebuildFixture.engine.warning')

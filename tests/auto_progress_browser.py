@@ -75,16 +75,25 @@ with sync_playwright() as playwright:
         page.goto('http://folio.test/tests/fixture.html')
         page.wait_for_function('window.fixtureReady===true')
         popup = page.locator('.folio-auto-popup')
+        page.wait_for_timeout(2300)
+        assert not popup.is_visible()
+        assert len(calls) == 0, 'opening old chat must not issue summary requests'
+        page.locator('#folio-wand').click()
+        assert '舊聊天有 3 頁尚未整理' in page.locator('.folio-auto-run').inner_text()
+        assert page.locator('.folio-auto-run progress').is_hidden()
+        page.locator('.folio-dialog').screenshot(path=str(OUT / 'old-chat-manual-only.png'))
+        page.get_by_role('button', name='關閉', exact=True).click()
+        page.evaluate("""async()=>{testContext.chat.push({mes:'新玩家輸入。',name:'玩家',is_user:true,send_date:'auto-new-user',extra:{}});testContext.chat.push({mes:'新生成的角色正文。',name:'船長',is_user:false,send_date:'auto-new-reply',extra:{}});await events.emit('MESSAGE_RECEIVED');}""")
         popup.wait_for(state='visible', timeout=10000)
-        page.wait_for_function('document.querySelector(".folio-auto-popup-title").textContent.includes("自動整理")')
+        page.wait_for_function('document.querySelector(".folio-auto-popup-title").textContent.includes("新回覆") || document.querySelector(".folio-auto-popup-title").textContent.includes("正在整理")')
         for _ in range(100):
             if held:
                 break
             page.wait_for_timeout(50)
         assert held, 'the first summary request should remain pending for inspection'
-        assert '第 1 頁' in popup.inner_text(), popup.inner_text()
+        assert '第 4 頁' in popup.inner_text(), popup.inner_text()
         progress = popup.get_by_role('progressbar')
-        assert progress.get_attribute('max') == '6'
+        assert progress.get_attribute('max') == '2'
         assert progress.get_attribute('value') == '0'
         popup.screenshot(path=str(OUT / 'auto-progress-popup-desktop.png'))
 
@@ -96,27 +105,27 @@ with sync_playwright() as playwright:
         popup.get_by_role('button', name='查看進度').click()
         page.get_by_role('tab', name='運行', exact=True).click()
         run_progress = page.locator('.folio-auto-run').get_by_role('progressbar')
-        assert run_progress.get_attribute('max') == '6'
+        assert run_progress.get_attribute('max') == '2'
         assert run_progress.get_attribute('value') == '0'
         page.locator('.folio-dialog').screenshot(path=str(OUT / 'auto-progress-run-desktop.png'))
         page.get_by_role('button', name='關閉', exact=True).click()
 
         generation_reply(*held.pop())
-        page.wait_for_function("testContext.chat.filter(m=>!m.is_user).every(m=>m.extra.folio_memory?.done)", timeout=120000)
-        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='自動整理完成'", timeout=120000)
-        assert progress.get_attribute('value') == '6'
+        page.wait_for_function("testContext.chat.find(m=>m.send_date==='auto-new-reply').extra.folio_memory?.done===true", timeout=120000)
+        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='新回覆已整理'", timeout=120000)
+        assert progress.get_attribute('value') == '2'
         popup.screenshot(path=str(OUT / 'auto-progress-complete.png'))
         popup.wait_for(state='hidden', timeout=7000)
 
         control['fail_next'] = True
         page.evaluate("""async()=>{testContext.chat.push({mes:'新的角色正文，用來檢查重試。',name:'船長',is_user:false,send_date:'auto-failure',extra:{}});await events.emit('MESSAGE_RECEIVED');}""")
-        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='自動整理等待重試'", timeout=15000)
-        assert '摘要 3/4 頁' in popup.inner_text()
+        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='新回覆等待重試'", timeout=15000)
+        assert '摘要 0/1 頁' in popup.inner_text()
         popup.screenshot(path=str(OUT / 'auto-progress-retry.png'))
         popup.get_by_role('button', name='立即重試').click()
         page.wait_for_function("testContext.chat.at(-1).extra.folio_memory?.done===true", timeout=20000)
-        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='自動整理完成'", timeout=120000)
+        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='新回覆已整理'", timeout=120000)
         assert not errors, errors
-        print(json.dumps({'passed': True, 'api_calls': len(calls), 'screenshots': 5, 'errors': errors}, ensure_ascii=False), flush=True)
+        print(json.dumps({'passed': True, 'old_chat_api_calls': 0, 'api_calls': len(calls), 'screenshots': 6, 'errors': errors}, ensure_ascii=False), flush=True)
     finally:
         browser.close()

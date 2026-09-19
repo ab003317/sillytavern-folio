@@ -37,10 +37,12 @@ with sync_playwright() as p:
         context=browser.new_context(viewport={'width':1280,'height':1000});context.route('**/*',handle)
         page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto('http://folio.test/tests/fixture.html');page.wait_for_function('window.fixtureReady===true')
+        page.wait_for_timeout(2300);assert len(calls)==0
+        page.locator('#folio-wand').click();page.get_by_role('button',name='一鍵重新整理全部',exact=True).first.click()
         page.wait_for_function('testContext.chat.filter(m=>!m.is_user).every(m=>m.extra.folio_memory?.done)',timeout=90000)
         assert len(calls)==3
         source=page.evaluate('JSON.stringify(testContext.chat.map(m=>m.mes))')
-        page.locator('#folio-wand').click();page.get_by_label('自動記憶',exact=True).uncheck()
+        page.get_by_label('新回覆自動記憶',exact=True).uncheck()
         page.get_by_role('tab',name='書頁目錄').click();page.locator('.folio-page-link').nth(2).click()
         old=page.locator('.folio-reader .folio-summary-text').inner_text()
         # Hold one model reply after transport, allowing inspection of pending UI and duplicate clicks.
@@ -50,7 +52,7 @@ with sync_playwright() as p:
         assert len(calls)==4
         assert '銀色鑰匙' in json.loads(calls[-1]['messages'][-1]['content'])['text']
         assert page.get_by_role('button',name='正在重整此頁…',exact=True).is_disabled()
-        assert not page.get_by_label('自動記憶',exact=True).is_checked()
+        assert not page.get_by_label('新回覆自動記憶',exact=True).is_checked()
         assert page.locator('.folio-reader .folio-summary-text').inner_text()==old
         page.locator('.folio-dialog').screenshot(path=str(OUT/'rebuild-pending-desktop.png'))
         page.evaluate('()=>{releaseRebuild();}')
@@ -76,7 +78,7 @@ with sync_playwright() as p:
         page.wait_for_function("[...document.querySelectorAll('.folio-rebuild-status')].some(e=>e.textContent.includes('已停止'))")
         assert page.locator('.folio-reader .folio-summary-text').inner_text()==old
         assert page.evaluate('testContext.chat[1].extra.folio_memory.done')
-        assert not page.get_by_label('自動記憶',exact=True).is_checked()
+        assert not page.get_by_label('新回覆自動記憶',exact=True).is_checked()
         assert not errors,errors
         print(json.dumps({'passed':True,'actualSinglePageClick':True,'pausedManualWorks':True,'priorityLastPage':True,'allRebuiltCalls':3,'reloadNoRepeat':True,'failureKeepsOldSummary':True,'stopRestores':True,'totalMockCalls':len(calls),'browserErrors':errors}),flush=True)
     finally:browser.close()
