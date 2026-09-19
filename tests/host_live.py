@@ -44,7 +44,8 @@ def route_request(route):
         route.fulfill(response=response,body=json.dumps(data));return
     if path=='/api/backends/chat-completions/generate':
         data=req.post_data_json
-        safe=MARKER in json.dumps(data.get('messages',[])) and len(calls)<6 and not data.get('stream')
+        prompt=json.dumps(data.get('messages',[]),ensure_ascii=False)
+        safe=(MARKER in prompt or ('連線測試' in prompt and '船長將藍色信件交給旅人，約定冬天前送到山城。' in prompt)) and len(calls)<6 and not data.get('stream')
         if not safe:
             blocked.append(path);route.fulfill(status=403,body='Blocked non-fixture generation');return
         entry={'model':data.get('model'),'source':data.get('chat_completion_source')}
@@ -75,6 +76,11 @@ with sync_playwright() as p:
         page.wait_for_selector('#folio-wand',state='attached',timeout=60000)
         installed=page.evaluate("""async(prefix)=>({version:(await(await fetch(prefix+'manifest.json')).json()).version,wand:!!document.querySelector('#extensionsMenu #folio-wand')})""",PREFIX)
         assert installed['version']=='0.2.0' and installed['wand'],installed
+        page.locator('#extensionsMenuButton').click()
+        page.locator('#folio-wand').click()
+        page.locator('.folio-dialog').wait_for(state='visible')
+        page.get_by_role('button',name='關閉',exact=True).click()
+        installed['nativeWandClick']=True
         result=page.evaluate("""async(prefix)=>{
           const real=SillyTavern.getContext();
           const {Host}=await import(prefix+'src/host.js');const {Engine}=await import(prefix+'src/engine.js');
@@ -126,6 +132,9 @@ with sync_playwright() as p:
         page.get_by_role('tab',name='本次取用').click()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-selection.png'))
         page.get_by_role('tab',name='記憶助手').click()
+        page.get_by_role('button',name='測試助手連線',exact=True).click()
+        page.wait_for_function("liveFixture.engine.connectionTest?.ok===true",timeout=65000)
+        result['helperButton']=True
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-helper.png'))
         page.set_viewport_size({'width':390,'height':844})
         page.get_by_role('tab',name='書頁目錄').click()

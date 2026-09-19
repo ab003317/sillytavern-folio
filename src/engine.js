@@ -207,7 +207,7 @@ export class Engine {
             }
         }
         this.last.stage='observed';this.last.final={observedAt:Date.now(),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
-        this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);
+        this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；記錄可在「本次取用」查看');
     }
     async preview(query='') {
         if(this.generating)throw new Error('請等這次正文生成完成後再試跑');
