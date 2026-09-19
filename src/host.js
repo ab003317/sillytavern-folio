@@ -13,6 +13,16 @@ export class Host {
         if (!this.modules) this.modules = import('/scripts/openai.js').catch(e => { this.modules = null; throw e; });
         return this.modules;
     }
+    async memoryConflict() {
+        const extensions = await import('/scripts/extensions.js');
+        const disabled = this.context().extensionSettings.disabledExtensions ?? [];
+        return (extensions.extensionNames ?? []).find(name => /(?:^|\/)Anima-Memory-System(?:$|-)/i.test(name) && !disabled.includes(name)) ?? '';
+    }
+    async useFolioInstead(name) {
+        if (!name || name !== await this.memoryConflict()) return;
+        const extensions = await import('/scripts/extensions.js');
+        await extensions.disableExtension(name, true);
+    }
     settings() {
         const c = this.context();
         if (!c.extensionSettings.folio) {

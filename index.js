@@ -13,10 +13,13 @@ const listeners = [];
 function on(type, fn) {
     if (!type) return; context.eventSource.on(type, fn); listeners.push([type,fn]);
 }
-function initialize() {
-    if (ui) return;
-    try { ui = mountUI(engine); engine.changed(); }
+let initializing = false;
+async function initialize() {
+    if (ui || initializing) return;
+    initializing = true;
+    try { engine.conflict = await host.memoryConflict(); ui = mountUI(engine); engine.changed(); }
     catch (e) { console.warn('[Folio] 擴充面板未就緒', e.message); }
+    finally { initializing = false; }
 }
 const events = context.eventTypes;
 on(events.APP_READY ?? events.APP_INITIALIZED, initialize);

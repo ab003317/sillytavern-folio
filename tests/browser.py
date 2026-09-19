@@ -23,6 +23,8 @@ def route_request(route):
         external.append(req.url);route.abort();return
     if path=='/scripts/openai.js':
         route.fulfill(status=200,body=MOCK_API,content_type='text/javascript');return
+    if path=='/scripts/extensions.js':
+        route.fulfill(status=200,body="export const extensionNames=globalThis.folioFixtureConflicts??[];export async function disableExtension(name){window.testDisabled=[name];}",content_type='text/javascript');return
     if path=='/api/backends/chat-completions/generate':
         body=req.post_data_json
         calls.append(body)
@@ -95,9 +97,18 @@ with sync_playwright() as p:
         page.get_by_role('checkbox',name='自動記憶').uncheck()
         page.evaluate("testContext.chat.push({mes:'新故事。',name:'角色',is_user:false,send_date:'later',extra:{}});events.emit('MESSAGE_RECEIVED');")
         before=len(calls);page.wait_for_timeout(2300);assert len(calls)==before
+        page.evaluate("localStorage.removeItem('folio-fixture-settings')")
+        conflict_page=context.new_page()
+        conflict_page.add_init_script("window.folioFixtureConflicts=['third-party/Anima-Memory-System'];")
+        conflict_page.goto('http://folio.test/tests/fixture.html')
+        conflict_page.get_by_role('button',name='改用書頁（停用 Anima 並刷新）').wait_for(state='visible')
+        before=len(calls);conflict_page.wait_for_timeout(2500);assert len(calls)==before
+        conflict_page.get_by_role('button',name='改用書頁（停用 Anima 並刷新）').click()
+        conflict_page.wait_for_function("window.testDisabled?.[0]==='third-party/Anima-Memory-System'")
+        conflict_page.close()
         assert not external,external
         assert not errors,errors
-        result={'passed':True,'model':inference,'summaries':7,'total_api_requests':len(calls),'selected_count':selected['count'],'external_requests':len(external),'browser_errors':errors}
+        result={'passed':True,'model':inference,'summaries':7,'total_api_requests':len(calls),'selected_count':selected['count'],'conflict_takeover':True,'external_requests':len(external),'browser_errors':errors}
         print(json.dumps(result,ensure_ascii=False),flush=True)
     finally:
         browser.close()

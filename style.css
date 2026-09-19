@@ -12,6 +12,8 @@
 .folio-button{appearance:none;display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:5px 12px;border:1px solid color-mix(in srgb,currentColor 25%,transparent);border-radius:5px;background:transparent;color:inherit;font:inherit;line-height:1.4;cursor:pointer;box-shadow:none;white-space:normal}
 .folio-button:hover{background:color-mix(in srgb,var(--folio-accent) 24%,transparent)}
 .folio-button:disabled{opacity:.5;cursor:wait}
+.folio-button[hidden]{display:none}
+.folio-panel>.folio-button+.folio-button{margin-left:8px;margin-top:8px}
 .folio-button:focus-visible,.folio-search:focus-visible,.folio-page>summary:focus-visible,.folio-toggle input:focus-visible{outline:2px solid var(--folio-muted);outline-offset:3px}
 .folio-open{background:var(--folio-accent);color:#fff;border-color:transparent;min-height:38px}
 .folio-info-wrap{position:relative;display:inline-flex;align-items:center;font-family:var(--mainFontFamily,system-ui,sans-serif)}

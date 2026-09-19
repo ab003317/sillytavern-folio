@@ -25,7 +25,13 @@ export function mountUI(engine) {
     const progress = el('p', 'folio-progress'), warning = el('p', 'folio-warning');
     const model = el('p','folio-model');
     const open = button('查閱記憶', ()=>{renderList(); dialog.showModal(); search.focus();}, 'folio-open');
-    root.append(header,status,progress,warning,open);
+    const takeover = button('改用書頁（停用 Anima 並刷新）',async event=>{
+        event.currentTarget.disabled=true;
+        try { await engine.host.useFolioInstead(engine.conflict); }
+        catch { warning.hidden=false;warning.textContent='停用尚未保存成功；可在酒館擴充管理停用 Anima 後重新整理。';event.currentTarget.disabled=false; }
+    });
+    takeover.hidden=true;
+    root.append(header,status,progress,warning,open,takeover);
     const parent = document.querySelector('#extensions_settings2') ?? document.querySelector('#extensions_settings');
     if (!parent) throw new Error('找不到酒館擴充功能面板');
     parent.append(root);
@@ -92,6 +98,7 @@ export function mountUI(engine) {
         state=next;toggle.checked=next.enabled;status.textContent=next.status;
         progress.textContent=next.total ? `${next.ready} / ${next.total} 則已整理${next.last ? `　上次帶入 ${next.last.items.length} 則正文` : ''}` : '從下一則故事開始記住。';
         warning.textContent=next.warning;warning.hidden=!next.warning;
+        takeover.hidden=!next.conflict;
         model.textContent=next.model ? `摘要 / 選頁：${next.model}　向量：內建、本機運行` : '向量：內建、本機運行　摘要：自動沿用酒館連線';
         if(dialog.open)renderList();
     }

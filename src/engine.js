@@ -9,6 +9,7 @@ export class Engine {
         this.running = false; this.generating = false; this.epoch = 0; this.failures = 0;
         this.vectors = new Map(); this.last = null; this.status = '等待開啟聊天'; this.warning = ''; this.disposed = false;
         this.currentIdentity = ''; this.vectorRetryAt = 0;
+        this.conflict = '';
     }
     snapshot() {
         const c = this.host.context();
@@ -20,10 +21,10 @@ export class Engine {
                 body, summary:r?.summary || r?.parts?.join('\n') || '', ready:!!r?.done, pinned:!!r?.pinned};
         }).filter(Boolean);
         return {entries, ready:entries.filter(x=>x.ready).length, total:entries.length, status:this.status,
-            warning:this.warning, last:this.last, model:this.host.model, enabled:this.host.settings().enabled};
+            warning:this.warning, last:this.last, model:this.host.model, enabled:this.host.settings().enabled, conflict:this.conflict};
     }
     emit() { this.notify(this.snapshot()); }
-    setStatus(text) { this.status = text; this.emit(); }
+    setStatus(text) { this.status = this.conflict ? 'Anima 仍啟用；書頁暫停，避免重複處理歷史' : text; this.emit(); }
     schedule(ms = 1800) {
         clearTimeout(this.timer);
         if (!this.disposed) this.timer = setTimeout(() => { this.tick().catch(() => {}); }, ms);
@@ -59,6 +60,7 @@ export class Engine {
     }
     vectorKey(record) { return MODEL + ':' + fingerprint(record.summary); }
     async tick() {
+        if (this.conflict) return;
         if (this.disposed || this.running || this.generating || !this.host.settings().enabled) { this.schedule(); return; }
         const c = this.host.context(), identity = this.host.identity();
         if (!identity || !c.chat?.length) { this.setStatus('等待開啟聊天'); return; }
@@ -132,7 +134,10 @@ export class Engine {
         }
     }
     async intercept(chat, contextSize, abort, type) {
-        if (!this.host.settings().enabled || ['quiet', 'impersonate'].includes(type) || !chat.length) return;
+        if (this.conflict || this.host.context().mainApi !== 'openai' || !this.host.settings().enabled || ['quiet', 'impersonate'].includes(type) || !chat.length) return;
+        if (chat.some(m => m.extra?.tool_invocations?.length || m.extra?.media?.length)) {
+            this.warning = '這次含工具或多媒體訊息，保留酒館原本的歷史處理'; this.emit(); return;
+        }
         this.controller?.abort(); this.selectController?.abort();
         const controller = new AbortController(); this.selectController = controller;
         const signal = controller.signal, identity = this.host.identity(), epoch = this.epoch;
@@ -180,10 +185,6 @@ export class Engine {
             }
             unchanged();
             const chosen = new Set(recent.picked), reasons = new Map([...recent.picked].map(i => [i, '近期正文']));
-            // Keep tool/multimodal history intact; the host owns their protocol and token accounting.
-            for (let i = 0; i < original.length; i++) if (original[i].extra?.tool_invocations?.length || original[i].extra?.media?.length) {
-                this.warning = '這次含工具或多媒體訊息，保留酒館原本的歷史處理'; this.emit(); return;
-            }
             let used = recent.used;
             const picked = [...entries.filter(e=>e.pinned), ...ids.map(id=>candidates.find(e=>e.id===id)).filter(Boolean)];
             const skipped = [];

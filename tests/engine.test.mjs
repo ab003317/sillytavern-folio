@@ -97,3 +97,13 @@ test('multimodal/tool history is left to the host instead of breaking protocol',
 test('quiet and impersonation requests do not trigger memory selection',async()=>{
     const r=rig();await r.engine.intercept(r.c.chat,2000,()=>{},'quiet');await r.engine.intercept(r.c.chat,2000,()=>{},'impersonate');assert.equal(r.stats().calls,0);
 });
+test('active Anima conflict prevents automatic summaries and history mutation',async()=>{
+    const r=rig();r.engine.conflict='third-party/Anima-Memory-System';
+    const before=JSON.stringify(r.c.chat);await r.engine.tick();await r.engine.intercept(r.c.chat,500,()=>{},'normal');
+    assert.equal(r.stats().calls,0);assert.equal(JSON.stringify(r.c.chat),before);
+    r.engine.changed();assert.match(r.engine.status,/Anima/);
+});
+test('text completion is untouched and does not issue a selector request',async()=>{
+    const r=rig();r.c.mainApi='textgenerationwebui';const before=JSON.stringify(r.c.chat);
+    await r.engine.intercept(r.c.chat,500,()=>{},'normal');assert.equal(r.stats().calls,0);assert.equal(JSON.stringify(r.c.chat),before);
+});
