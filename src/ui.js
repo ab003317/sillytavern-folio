@@ -26,7 +26,7 @@ function ring(label,value,total,help,cls=''){
 
 export function mountUI(engine){
     const menu=document.querySelector('#extensionsMenu');if(!menu)throw new Error('找不到輸入欄魔法棒選單');
-    let state=engine.snapshot(),tab='run',selected=null,editing=false,shown=60,usageChoice='',usageChat='',autoWasActive=false,autoCompletion=false,autoTimer=null;
+    let state=engine.snapshot(),tab='run',selected=null,editing=false,shown=60,usageChoice='',usageChat='',autoWasActive=false,manualWasActive=false,autoCompletion=false,autoTimer=null;
     const entry=button('',()=>open(),'list-group-item flex-container flexGap5 interactable');entry.id='folio-wand';
     const icon=el('i','fa-fw fa-solid fa-book-open extensionsMenuExtensionButton');icon.setAttribute('aria-hidden','true');
     const badge=el('span','folio-menu-status');entry.append(icon,el('span','','書頁記憶'),badge);menu.append(entry);
@@ -48,14 +48,14 @@ export function mountUI(engine){
     const content=el('main','folio-content');content.append(...Object.values(panels));
     dialog.append(top,status,warning,error,tabs,content);
     const autoPopup=el('aside','folio-auto-popup'),autoPopupHead=el('div','folio-auto-popup-head'),autoPopupTitle=el('strong','folio-auto-popup-title'),autoPopupDetail=el('p','folio-auto-popup-detail'),autoPopupProgress=el('progress'),autoPopupActions=el('div','folio-auto-popup-actions');
-    autoPopup.hidden=true;autoPopup.setAttribute('role','region');autoPopup.setAttribute('aria-label','自動整理狀態');autoPopupDetail.setAttribute('aria-live','polite');autoPopupProgress.setAttribute('aria-label','自動整理進度');
+    autoPopup.hidden=true;autoPopup.setAttribute('role','region');autoPopup.setAttribute('aria-label','記憶整理狀態');autoPopupDetail.setAttribute('aria-live','polite');autoPopupProgress.setAttribute('aria-label','記憶整理進度');
     const autoView=button('查看進度',()=>{open();setTab('run');}),autoRetry=button('立即重試',()=>engine.retry());
     const autoMark=el('span','folio-auto-mark','書');autoMark.setAttribute('aria-hidden','true');autoPopupHead.append(autoMark,autoPopupTitle);autoPopupActions.append(autoView,autoRetry);autoPopup.append(autoPopupHead,autoPopupDetail,autoPopupProgress,autoPopupActions);
     document.body.append(dialog,autoPopup);
     const perform=task=>async event=>{
         const b=event?.currentTarget;if(b)b.disabled=true;error.hidden=true;
         try{await task();}catch(e){error.textContent=e.message||'操作未完成，請稍後重試';error.hidden=false;}
-        finally{if(b)b.disabled=false;}
+        finally{if(b)b.disabled=false;update(engine.snapshot());}
     };
     const rebuildPanels=[];
     for(const target of [panels.run,panels.pages]){
@@ -76,8 +76,8 @@ export function mountUI(engine){
     const usageBar=el('div','folio-toolbar folio-usage-bar');usageBar.append(usagePicker,info(`每段聊天在此瀏覽器保存最近 ${USAGE_LIMIT} 次發送取用快照，但這裡只列出對應角色回覆仍存在的紀錄。刪除最新回覆會回退到上一筆現存回覆；快照仍在本機，回覆恢復時可重新識別。只供查看，不會把已刪除正文送入後續請求。清除瀏覽器網站資料會移除紀錄，不跨裝置同步。`));
     const selectionBody=el('div');panels.selection.append(heading('發送取用紀錄','在酒館組裝好請求、交給後端前核對全文；不是服務商接收或生成成功的回執。未發送的選頁不會取代最近紀錄。'),usageBar,selectionBody);
     const apiForms=mountApiForms(engine,panels.helper,{el,button,info,heading});
-    dialog.addEventListener('close',()=>apiForms.conceal());
-    function open(){state=engine.snapshot();update(state);if(!dialog.open)dialog.showModal();setTab(tab);tabButtons[tab].focus();}
+    dialog.addEventListener('close',()=>{apiForms.conceal();document.body.append(autoPopup);renderAutoPopup();});
+    function open(){state=engine.snapshot();update(state);if(!dialog.open)dialog.showModal();dialog.append(autoPopup);setTab(tab);tabButtons[tab].focus();}
     function setTab(key){tab=key;for(const k of Object.keys(labels)){panels[k].hidden=k!==key;tabButtons[k].setAttribute('aria-selected',String(k===key));tabButtons[k].tabIndex=k===key?0:-1;}render();}
     function autoText(a=state.auto){
         if(state.rebuild?.pending)return `玩家已啟動一鍵重新整理；正在處理目前聊天。`;
@@ -101,6 +101,20 @@ export function mountUI(engine){
         const pages=a?.total??0,total=Math.max(1,pages*2),value=complete?total:Math.min(total,(a?.ready??0)+(a?.indexed??0));progress.max=total;progress.value=value;
         progress.setAttribute('aria-valuetext',complete?'新回覆整理完成':autoText(a));
     }
+    function rebuildText(job=state.rebuild){
+        if(state.rebuildQueued)return '已接受操作；本次角色回覆完成後，會重新整理目前聊天。';
+        if(state.resetting&&!job)return '正在保存重新整理任務；正文不會被刪除。';
+        if(!job)return '準備重新整理目前聊天。';
+        const counts=`摘要 ${job.done}/${job.total} 頁 · 向量 ${job.vectors}/${job.total} 頁`;
+        if(state.warning&&job.pending)return `等待重試：${state.warning} · ${counts}`;
+        if(job.pending)return `${state.work?.page?`正在處理第 ${state.work.page} 頁 · `:''}${counts}`;
+        return `${job.cancelled?'本次重新整理已停止':'舊聊天重新整理完成'} · ${counts}`;
+    }
+    function setRebuildProgress(progress,job=state.rebuild,complete=false){
+        const total=Math.max(1,(job?.total??0)*2),settled=((job?.cancelled??0)+(job?.removed??0))*2;
+        progress.max=total;progress.value=complete?total:Math.min(total,(job?.done??0)+(job?.vectors??0)+settled);
+        progress.setAttribute('aria-valuetext',rebuildText(job));
+    }
     function autoPanel(){
         const a=state.auto,titleText=!state.enabled?'新回覆自動記憶已暫停':state.rebuild?.pending?'手動重新整理中':a?.active?'新回覆整理進度':a?.complete?'最近新回覆已整理':a?.manualPending?'舊聊天等待手動整理':'等待新回覆';
         const section=el('section','folio-auto-run'),head=el('div','folio-auto-run-head'),title=el('strong','',titleText),detail=el('p','folio-muted',autoText(a)),progress=el('progress');
@@ -109,7 +123,20 @@ export function mountUI(engine){
         if(state.warning&&a?.active)head.append(button('立即重試',()=>engine.retry()));section.append(head,detail,progress);return section;
     }
     function renderAutoPopup(){
-        const a=state.auto;
+        const a=state.auto,job=state.rebuild,manualActive=state.resetting||state.rebuildQueued||!!job?.pending;
+        if(manualActive){
+            clearTimeout(autoTimer);autoCompletion=false;manualWasActive=true;autoPopup.hidden=false;autoPopup.classList.toggle('folio-auto-error',!!state.warning);
+            autoPopup.dataset.phase=state.rebuildQueued||state.resetting?'waiting':state.work?.stage??'summary';
+            autoPopupTitle.textContent=state.warning?'重新整理等待重試':state.rebuildQueued?'已排隊，等待回覆完成':state.resetting?'正在建立重新整理任務':'正在重新整理舊聊天';
+            autoPopupDetail.textContent=rebuildText(job);setRebuildProgress(autoPopupProgress,job);autoRetry.hidden=!state.warning||state.resetting||state.rebuildQueued;return;
+        }
+        if(manualWasActive){
+            manualWasActive=false;
+            if(job?.complete){
+                autoCompletion=true;autoPopup.hidden=false;autoPopup.classList.remove('folio-auto-error');autoPopup.dataset.phase='complete';autoPopupTitle.textContent=job.cancelled?'本次重新整理已停止':'舊聊天重新整理完成';autoPopupDetail.textContent=rebuildText(job);setRebuildProgress(autoPopupProgress,job,!job.cancelled);autoRetry.hidden=true;
+                clearTimeout(autoTimer);autoTimer=setTimeout(()=>{autoCompletion=false;autoPopup.hidden=true;},3200);return;
+            }
+        }
         if(a?.active){
             clearTimeout(autoTimer);autoCompletion=false;autoWasActive=true;autoPopup.hidden=false;autoPopup.classList.toggle('folio-auto-error',!!state.warning);
             autoPopup.dataset.phase=a.phase??'';
@@ -200,12 +227,12 @@ export function mountUI(engine){
     function renderRebuild(){
         const job=state.rebuild;
         for(const f of rebuildPanels){
-            f.all.disabled=!state.total||state.resetting||!!job?.pending||state.generating;
-            f.all.textContent=state.resetting?'正在保存重整任務…':'一鍵重新整理全部';
-            f.detail.textContent=`重做目前聊天的 ${state.total} 頁摘要與向量索引，包含人工修改的摘要；會呼叫總結模型並可能收費。不刪正文，「新回覆自動記憶」關閉時也能執行。${state.generating?'正文生成中，結束後可重新整理。':''}`;
+            f.all.disabled=state.resetting||!!job?.pending||state.rebuildQueued;
+            f.all.textContent=state.resetting?'正在保存重整任務…':job?.pending?'重新整理進行中':state.rebuildQueued?'已排隊，等待回覆完成':'一鍵重新整理全部';
+            f.detail.textContent=state.rebuildQueued?'已接受操作；這次角色回覆完成後自動開始，不需要再按一次。':`重做目前聊天的 ${state.total} 頁摘要與向量索引，包含人工修改的摘要；會呼叫總結模型並可能收費。不刪正文，「新回覆自動記憶」關閉時也能執行。${state.generating?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':''}`;
             f.stop.hidden=!job?.pending;f.stop.disabled=state.resetting;f.retry.hidden=!job?.pending||!state.warning;f.retry.disabled=state.busy;
-            f.progress.hidden=!job;f.progress.max=job?.total||1;f.progress.value=(job?.done??0)+(job?.cancelled??0)+(job?.removed??0);
-            f.outcome.textContent=job?`本次重整：摘要 ${job.done}/${job.total} 頁，向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已完成，向量暫用文字檢索。':job.cancelled?'已停止。':'已完成。'}`:'';
+            f.progress.hidden=!(job||state.rebuildQueued||state.resetting);setRebuildProgress(f.progress,job);
+            f.outcome.textContent=state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':job?`本次重整：摘要 ${job.done}/${job.total} 頁，向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已完成，向量暫用文字檢索。':job.cancelled?'已停止。':'已完成。'}`:state.resetting?'正在建立手動重新整理任務。':'';
         }
     }
     function render(){renderRebuild();if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}

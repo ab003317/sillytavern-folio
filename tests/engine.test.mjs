@@ -106,10 +106,17 @@ test('rebuild transaction failure leaves original summaries untouched and unlock
     await assert.rejects(r.engine.refreshAll(),/storage full/);assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.resetting,false);assert.equal(r.cache.owner,null);
 });
 
-test('another tab lease or main generation gives a visible error before any reset',async()=>{
+test('another tab lease gives a visible error before any reset',async()=>{
     const r=rig();ready(r);const before=JSON.stringify(r.c.chat);r.cache.owner='other';await assert.rejects(r.engine.refreshAll(),/另一個視窗/);
-    assert.equal(JSON.stringify(r.c.chat),before);r.cache.owner=null;r.engine.generationStarted();await assert.rejects(r.engine.refreshAll(),/正文正在生成/);
-    assert.equal(JSON.stringify(r.c.chat),before);await assert.rejects(r.engine.refreshAll('different-chat'),/聊天已切換/);
+    assert.equal(JSON.stringify(r.c.chat),before);r.cache.owner=null;await assert.rejects(r.engine.refreshAll('different-chat'),/聊天已切換/);
+});
+
+test('one-click rebuild queues during generation and starts after the reply ends',async()=>{
+    const r=rig();ready(r);const before=JSON.stringify(r.c.chat);r.engine.generationStarted();await r.engine.refreshAll();
+    assert.equal(r.engine.snapshot().rebuildQueued,true);assert.equal(r.engine.snapshot().rebuild,null);assert.equal(JSON.stringify(r.c.chat),before);
+    r.engine.generationEnded();await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(r.engine.snapshot().rebuildQueued,false);assert.equal(r.engine.snapshot().rebuild.pending,1);
+    await r.engine.tick();await r.engine.tick();assert.equal(r.engine.snapshot().rebuild.complete,true);assert.equal(r.stats().calls,1);
 });
 
 test('manual vector failure reports fallback and does not repeat paid summaries endlessly',async()=>{

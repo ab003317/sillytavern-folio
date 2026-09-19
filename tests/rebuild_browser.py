@@ -38,8 +38,19 @@ with sync_playwright() as p:
         page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto('http://folio.test/tests/fixture.html');page.wait_for_function('window.fixtureReady===true')
         page.wait_for_timeout(2300);assert len(calls)==0
-        page.locator('#folio-wand').click();page.get_by_role('button',name='一鍵重新整理全部',exact=True).first.click()
+        page.locator('#folio-wand').click();rebuild_all=page.get_by_role('button',name='一鍵重新整理全部',exact=True).first
+        page.evaluate("events.emit('GENERATION_STARTED')");assert rebuild_all.is_enabled();rebuild_all.click()
+        assert len(calls)==0
+        assert page.get_by_role('button',name='已排隊，等待回覆完成',exact=True).first.is_disabled()
+        popup=page.locator('.folio-auto-popup');assert popup.is_visible();assert '已排隊，等待回覆完成' in popup.inner_text()
+        popup.screenshot(path=str(OUT/'rebuild-queued-desktop.png'))
+        page.set_viewport_size({'width':390,'height':844})
+        assert popup.evaluate('(e)=>e.getBoundingClientRect().left>=0 && e.getBoundingClientRect().right<=innerWidth')
+        page.screenshot(path=str(OUT/'rebuild-queued-mobile.png'));page.set_viewport_size({'width':1280,'height':1000})
+        page.evaluate("events.emit('GENERATION_ENDED')")
+        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='正在重新整理舊聊天'",timeout=10000)
         page.wait_for_function('testContext.chat.filter(m=>!m.is_user).every(m=>m.extra.folio_memory?.done)',timeout=90000)
+        page.wait_for_function("document.querySelector('.folio-auto-popup-title')?.textContent==='舊聊天重新整理完成'",timeout=10000)
         assert len(calls)==3
         source=page.evaluate('JSON.stringify(testContext.chat.map(m=>m.mes))')
         page.get_by_label('新回覆自動記憶',exact=True).uncheck()

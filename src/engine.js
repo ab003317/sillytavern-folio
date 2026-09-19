@@ -12,7 +12,7 @@ export class Engine {
         this.last=null; this.awaitingFinal=false; this.activity=[]; this.work=null; this.connectionTests={summary:null,selection:null};
         this.observedStamps=[];this.traceLoad=0;this.notice='';this.maintenance=Promise.resolve();this.generationGuard=null;
         this.status='等待開啟聊天'; this.warning='';
-        this.resetting=false;this.idle=Promise.resolve();
+        this.resetting=false;this.idle=Promise.resolve();this.queuedRebuild=null;
         this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.pendingUsage=null;
         this.autoPages=new Set();this.seenPages=new Set();this.indexPages=new Set();
     }
@@ -95,7 +95,7 @@ export class Engine {
         return {entries,total,ready,indexed,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
-            resetting:this.resetting,rebuild,generating:this.generating,chatIdentity:this.host.identity(),auto,
+            resetting:this.resetting,rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),generating:this.generating,chatIdentity:this.host.identity(),auto,
             usages:usageRecords,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
     }
@@ -108,6 +108,7 @@ export class Engine {
         this.cancel();this.warning='';this.failures=0;
         const identity=this.host.identity(),stamps=chatStamps(this.host.context().chat??[]);
         if(identity!==this.currentIdentity){
+            this.queuedRebuild=null;
             this.vectors.clear();this.autoPages.clear();this.indexPages.clear();this.last=null;this.activity=[];this.notice='';this.currentIdentity=identity;const load=++this.traceLoad;
             this.loadUsage(identity);
             if(identity)this.cache.get('records','trace:'+identity).then(trace=>{if(identity===this.currentIdentity&&load===this.traceLoad&&!this.last&&trace){
@@ -136,7 +137,15 @@ export class Engine {
         this.schedule();
     }
     generationStarted() { this.generating=true;this.generationGuard=null;this.controller?.abort();this.emit(); }
-    generationEnded() { this.generating=false;this.selectController?.abort();this.emit();this.schedule(); }
+    generationEnded() {
+        this.generating=false;this.selectController?.abort();this.emit();this.schedule();
+        const request=this.queuedRebuild;if(!request)return;
+        this.queuedRebuild=null;
+        Promise.resolve().then(()=>this.refreshAll(request.identity)).catch(e=>{
+            if(request.identity!==this.host.identity())return;
+            this.warning=String(e.message??e);this.setStatus('未能啟動已排隊的重新整理；請檢查提示後再按一次');
+        });
+    }
     toggle(enabled) {
         this.host.settings().enabled=enabled;this.host.context().saveSettingsDebounced();this.cancel();
         if(!enabled)this.embedder.stop();this.setStatus(enabled?'已開啟；只會處理接下來的新回覆':this.rebuildState()?.pending?'新回覆自動記憶已暫停；手動重整仍會繼續':'已暫停；舊聊天保持原狀');this.schedule();
@@ -158,7 +167,16 @@ export class Engine {
         const r=structuredClone(p.record??newRecord(p.message,p.playerInput));r.pinned=!r.pinned;await this.savePage(p,r);
     }
     async refresh(index) {return this.queueRebuild([this.resolvePage(index)]);}
-    async refreshAll(identity=this.host.identity()) {if(identity!==this.host.identity())throw new Error('聊天已切換，請在目前聊天重新操作');return this.queueRebuild(this.pages());}
+    async refreshAll(identity=this.host.identity()) {
+        if(identity!==this.host.identity())throw new Error('聊天已切換，請在目前聊天重新操作');
+        if(this.resetting||this.rebuildState()?.pending||this.queuedRebuild)throw new Error('已有重整任務，請等完成或先停止本次重整');
+        if(this.generating){
+            this.queuedRebuild={identity,requestedAt:Date.now()};this.warning='';
+            this.log('已接受一鍵重新整理；本次角色回覆完成後開始');
+            this.setStatus('一鍵重新整理已排隊；等待本次角色回覆完成');return;
+        }
+        return this.queueRebuild(this.pages());
+    }
     async persistRebuild(pairs) {
         this.assertPages(pairs.map(([p])=>p));
         await this.cache.putMany('records',pairs.map(([p,r])=>[p.identity+':'+r.hash,structuredClone(r)]));
