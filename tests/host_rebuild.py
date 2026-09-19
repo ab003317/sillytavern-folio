@@ -61,7 +61,7 @@ with sync_playwright() as p:
             const {Cache}=await import(prefix+'src/store.js'),{Embedder}=await import(prefix+'src/embedding.js'),{mountUI}=await import(prefix+'src/ui.js'),{bookPages,newRecord}=await import(prefix+'src/core.js');
             const lines=['FOLIO-REBUILD-TEST 我向船長詢問信件。','船長交付藍色信件，請旅人在冬天前送到山城的醫師林嵐手上。','FOLIO-REBUILD-TEST 我去旅店休息。','掌櫃收下五枚銅幣，交給旅人銀色房門鑰匙，客房朝西。'];
             const chat=lines.map((mes,i)=>({mes,name:i%2?'旅人故事':'玩家',is_user:i%2===0,send_date:'rebuild-'+i,extra:{}}));
-            const fixture={...real,chat,chatId:'folio-rebuild-synthetic-only',extensionSettings:structuredClone(real.extensionSettings),saveChat:async()=>{},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>Math.ceil(text.length*1.5)};
+            const fixture={...real,chat,chatId:'folio-rebuild-synthetic-only',extensionSettings:{...real.extensionSettings,folio:structuredClone(real.extensionSettings.folio)},saveChat:async()=>{},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>Math.ceil(text.length*1.5)};
             fixture.extensionSettings.folio.enabled=false;
             const host=new Host(()=>fixture),cache=new Cache('folio-rebuild-test-'+Date.now()),embedder=new Embedder(cache);let ui;
             const engine=new Engine(host,cache,embedder,state=>ui?.update(state));
