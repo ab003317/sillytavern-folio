@@ -1,6 +1,7 @@
 import { KEY, MODEL, bookPages, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
     excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, SUMMARY_SYSTEM, SELECT_SYSTEM } from './core.js';
 import { uid } from './host.js';
+import { mergeUsage, usageView } from './usage.js';
 
 export class Engine {
     constructor(host, cache, embedder, notify = () => {}) {
@@ -12,6 +13,7 @@ export class Engine {
         this.observedStamps=[];this.traceLoad=0;this.notice='';this.maintenance=Promise.resolve();this.generationGuard=null;
         this.status='等待開啟聊天'; this.warning='';
         this.resetting=false;this.idle=Promise.resolve();
+        this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';
     }
     pages() { const identity=this.host.identity();return bookPages(this.host.context().chat ?? []).map(p=>({...p,identity})); }
     pendingRebuild(record){return !!record?.rebuild&&!record.rebuild.cancelled&&(!record.done||(!record.rebuild.indexed&&!record.rebuild.vectorFallback));}
@@ -25,8 +27,28 @@ export class Engine {
             vectors:group.filter(r=>r.rebuild.indexed&&!r.rebuild.cancelled).length,vectorFallback:group.some(r=>r.rebuild.vectorFallback),complete:pending===0};
     }
     traceValid(trace){return trace&&samePrefix(trace.stamps,chatStamps(this.host.context().chat??[]));}
+    loadUsage(identity) {
+        this.usages=[];this.usageIdentity=identity;this.usageError='';const load=++this.usageLoad;
+        if(!identity)return;
+        this.cache.get('records','usage:'+identity).then(records=>{
+            if(load!==this.usageLoad||identity!==this.host.identity())return;
+            this.usages=mergeUsage(this.usages,Array.isArray(records)?records:[]);this.emit();
+        }).catch(()=>{if(load===this.usageLoad){this.usageError='發送紀錄暫時無法讀取，請稍後重新開啟聊天';this.emit();}});
+    }
+    rememberUsage(trace,identity=this.host.identity()) {
+        if(!identity||!mergeUsage([trace]).length)return;
+        const receipt=structuredClone(trace);
+        if(identity===this.host.identity()){
+            if(this.usageIdentity!==identity)this.loadUsage(identity);
+            this.usages=mergeUsage([receipt],this.usages);
+        }
+        const records=identity===this.usageIdentity?structuredClone(this.usages):[receipt];
+        this.usageWrite=this.usageWrite.catch(()=>{}).then(()=>this.cache.appendUsage(identity,records)).then(saved=>{
+            if(identity===this.host.identity()&&identity===this.usageIdentity){this.usages=mergeUsage(this.usages,saved);this.usageError='';this.emit();}
+        }).catch(()=>{if(identity===this.host.identity()){this.usageError='發送紀錄暫時只保留在此視窗：本機保存失敗，請檢查瀏覽器儲存空間';this.emit();}});
+    }
     invalidateTrace(){
-        this.last=null;this.awaitingFinal=false;this.traceLoad++;this.notice='聊天內容已改變；舊取用紀錄已失效，下次將從現有正文重新查頁。';
+        this.last=null;this.awaitingFinal=false;this.traceLoad++;this.notice='聊天內容已改變；待發送的選頁已失效，已發送紀錄保留。下次將從現有正文重新查頁。';
         const identity=this.host.identity();if(identity)this.cache.put('records','trace:'+identity,null).catch(()=>{});
     }
     prune(){
@@ -47,6 +69,7 @@ export class Engine {
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
             resetting:this.resetting,rebuild:this.rebuildState(),generating:this.generating,chatIdentity:this.host.identity(),
+            usages:this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(this.host.context().chat??[])):[],usageError:this.usageError,
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
     }
     emit() { this.notify(this.snapshot()); }
@@ -59,11 +82,14 @@ export class Engine {
         const identity=this.host.identity(),stamps=chatStamps(this.host.context().chat??[]);
         if(identity!==this.currentIdentity){
             this.vectors.clear();this.last=null;this.activity=[];this.notice='';this.currentIdentity=identity;const load=++this.traceLoad;
-            if(identity)this.cache.get('records','trace:'+identity).then(trace=>{if(identity===this.currentIdentity&&load===this.traceLoad&&!this.last&&trace){if(this.traceValid(trace))this.last=trace;else this.invalidateTrace();this.emit();}}).catch(()=>{});
+            this.loadUsage(identity);
+            if(identity)this.cache.get('records','trace:'+identity).then(trace=>{if(identity===this.currentIdentity&&load===this.traceLoad&&!this.last&&trace){
+                if(trace.final&&!trace.preview)this.rememberUsage(trace,identity);
+                if(this.traceValid(trace))this.last=trace;else this.invalidateTrace();this.emit();}}).catch(()=>{});
             this.prune();
         }else if(deleted||!samePrefix(this.observedStamps,stamps)){
             this.invalidateTrace();this.activity=[];
-            this.log(deleted?'已刪除樓層：重新核對頁碼、摘要來源與取用紀錄':'正文已變更：舊取用紀錄失效');
+            this.log(deleted?'已刪除樓層：重新核對書頁；已發送紀錄保留':'正文已變更：待發送選頁失效，已發送紀錄保留');
             if(deleted)this.prune();
         }
         this.observedStamps=stamps;
@@ -116,7 +142,7 @@ export class Engine {
             const pairs=pages.map(p=>{const current=live.get(p.message)?.record;
                 const previous=current?structuredClone(current):null;if(previous)delete previous.rebuild;
                 const r={...newRecord(p.message,p.playerInput),pinned:!!current?.pinned,revision:uid(),rebuild:{...job,previous}};return [p,r];});
-            await this.persistRebuild(pairs);this.invalidateTrace();this.notice='記憶正在重整；舊取用紀錄已失效，會從新摘要重新查頁。';
+            await this.persistRebuild(pairs);this.invalidateTrace();this.notice='記憶正在重整；待發送選頁已失效，已發送紀錄保留。';
             this.log(pages.length===1?`第 ${pages[0].number} 頁已排入優先重整`:`已排入 ${pages.length} 頁全文重整`);
             this.failures=0;this.vectorRetryAt=0;this.warning='';this.setStatus(`已排入 ${pages.length} 頁重整；不受自動記憶開關影響`);
         }catch(e){
@@ -277,7 +303,7 @@ export class Engine {
             active();const ordered=[...chosen].sort((a,b)=>a-b);
             // While the catalogue is incomplete, do not change even the source formatting.
             const result=ordered.map(i=>trace.mode==='building'?original[i]:cleaned[i]);
-            trace.items=ordered.map((i,j)=>({index:this.sourceIndex(original[i]),number:entries.find(p=>p.i===i)?.number,name:original[i].name,role:original[i].is_user?'user':'assistant',body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),final:null}));
+            trace.items=ordered.map((i,j)=>({index:this.sourceIndex(original[i]),sourceStamp:stamps[this.sourceIndex(original[i])],number:entries.find(p=>p.i===i)?.number,title:entries.find(p=>p.i===i)?.title,name:original[i].name,role:original[i].is_user?'user':'assistant',body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),final:null}));
             Object.assign(trace,{tokens:used,model:trace.candidates.length?(this.host.models?.selection??this.host.model):'',stage:options.preview?'preview':'awaiting-final'});
             if(!options.preview){chat.splice(0,chat.length,...result);this.awaitingFinal=true;this.generationGuard={identity,stamps};}
             this.warning=warning;this.log(options.preview?'選頁試跑完成，未生成正文':`已提交 ${trace.items.length} 則歷史，等待酒館最終組裝`);
@@ -301,7 +327,7 @@ export class Engine {
                 this.setStatus('已阻止過期歷史送出');return;
             }
         }
-        if(!this.awaitingFinal||!this.last||body.type==='quiet'||!Array.isArray(body.messages))return;
+        if(!this.awaitingFinal||!this.last||this.last.preview||body.type==='quiet'||!Array.isArray(body.messages))return;
         if(!this.traceValid(this.last)){this.invalidateTrace();this.emit();return;}
         this.awaitingFinal=false;const normalize=s=>String(s??'').replace(/\s+/g,' ').trim();
         const messages=body.messages.map(m=>({role:m.role,text:normalize(Array.isArray(m.content)?m.content.filter(x=>x.type==='text').map(x=>x.text).join('\n'):m.content),used:[]}));
@@ -316,7 +342,8 @@ export class Engine {
                 if(at>=0){m.used.push([at,at+needle.length]);item.final=true;break;}
             }
         }
-        this.last.stage='observed';this.last.final={observedAt:Date.now(),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
+        this.last.stage='observed';this.last.final={observedAt:Math.max(Date.now(),(this.usages[0]?.final?.observedAt??0)+1),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
+        this.rememberUsage(this.last);
         this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；記錄可在「本次取用」查看');
     }
     async preview(query='') {

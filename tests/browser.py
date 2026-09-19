@@ -89,6 +89,7 @@ with sync_playwright() as p:
         selected=page.evaluate("""async()=>{
           const original=JSON.stringify(testContext.chat);const core=structuredClone(testContext.chat);let aborted=false;
           await folioIntercept(core,520,()=>{aborted=true;},'normal');
+          await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
           return {count:core.length,latest:core.at(-1).mes,unchanged:JSON.stringify(testContext.chat)===original,aborted,bodies:core.map(m=>m.mes)};
         }""")
         assert selected['unchanged'] and not selected['aborted'],selected
@@ -115,7 +116,8 @@ with sync_playwright() as p:
         # Actual IndexedDB reconciliation, stale trace invalidation, and source floor shift.
         page.evaluate("testContext.chat.splice(0,2);events.emit('MESSAGE_DELETED');testContext.saveChat();")
         page.get_by_role('tab',name='本次取用',exact=True).click()
-        assert page.locator('.folio-view:not([hidden])').inner_text().find('失效')>=0
+        assert '當時發送快照' in page.locator('.folio-view:not([hidden])').inner_text()
+        assert page.locator('.folio-usage-item').count()>0
         page.get_by_role('tab',name='書頁目錄',exact=True).click()
         assert page.locator('.folio-page-link').count()==2
         page.get_by_role('button',name='關閉',exact=True).click()

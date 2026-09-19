@@ -1,3 +1,5 @@
+import { mergeUsage } from './usage.js';
+
 export class Cache {
     constructor(name = 'folio-cache-v1') { this.name = name; this.opened = null; }
     open() {
@@ -32,6 +34,14 @@ export class Cache {
             const tx=db.transaction(store,'readwrite'),table=tx.objectStore(store);
             for(const [key,value]of entries)table.put(value,key);
             tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('重整快取交易中止'));
+        });
+    }
+    async appendUsage(identity,records) {
+        const db=await this.open(),key='usage:'+identity;
+        return new Promise((resolve,reject)=>{
+            const tx=db.transaction('records','readwrite'),table=tx.objectStore('records'),request=table.get(key);let merged;
+            request.onsuccess=()=>{merged=mergeUsage(records,Array.isArray(request.result)?request.result:[]);table.put(merged,key);};
+            tx.oncomplete=()=>resolve(merged);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('發送紀錄保存失敗'));
         });
     }
     async lease(key, owner, release = false) {

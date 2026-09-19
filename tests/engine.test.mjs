@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import {Engine} from '../src/engine.js';
 import {KEY,newRecord,sourceOf,validRecord,bookPages} from '../src/core.js';
 import {sha256} from '../src/hash.js';
+import {mergeUsage} from '../src/usage.js';
 
 class MemoryCache {
     constructor(){this.data=new Map();this.owner=null;}
     async get(s,k){return structuredClone(this.data.get(s+k));}
     async put(s,k,v){this.data.set(s+k,structuredClone(v));}
     async putMany(s,entries){for(const [k,v]of entries)await this.put(s,k,v);}
+    async appendUsage(identity,records){const merged=mergeUsage(records,await this.get('records','usage:'+identity)??[]);await this.put('records','usage:'+identity,merged);return merged;}
     async pruneRecords(identity,hashes){const prefix='records'+identity+':',keep=new Set(hashes);for(const key of this.data.keys())if(key.startsWith(prefix)&&!keep.has(key.slice(prefix.length)))this.data.delete(key);}
     async lease(k,o,release=false){if(release){if(this.owner===o)this.owner=null;return false;}if(this.owner&&this.owner!==o)return false;this.owner=o;return true;}
     close(){}
@@ -313,4 +315,74 @@ test('delete event between interception and final assembly blocks sending even a
 test('delete all followed by new floor zero cannot inherit deleted data',async()=>{
     const r=rig();await r.engine.tick();r.c.chat.splice(0);r.engine.changed({deleted:true});await r.engine.maintenance;assert.equal(r.engine.snapshot().total,0);
     r.c.chat.push(message('全新故事',0));await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(bookPages(r.c.chat)[0].record.hash,sourceOf(r.c.chat[0]).hash);
+});
+
+async function sent(r){
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('aborted'),'normal');
+    r.engine.captureFinal({type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+    await r.engine.usageWrite;return structuredClone(r.engine.snapshot().usages[0]);
+}
+const settle=()=>new Promise(resolve=>setTimeout(resolve,0));
+
+test('sent journal survives deleting newest response and reload without reusing the working trace',async()=>{
+    const r=rig([message('舊正文',0),message('繼續',1,true)]);r.engine.changed();const receipt=await sent(r);
+    r.c.chat.push(message('最新回覆',2));r.engine.changed();r.c.chat.pop();r.engine.changed({deleted:true});
+    assert.equal(r.engine.last,null);assert.equal(r.engine.snapshot().usages[0].id,receipt.id);
+    const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();
+    assert.equal(reopened.snapshot().usages[0].id,receipt.id);assert.equal(reopened.snapshot().usages[0].sourceChanged,false);
+});
+
+test('journal snapshots retain missing source bodies and original numbers but never retrieve them again',async()=>{
+    const r=rig([message('刪除秘密',0),message('保留正文',1),message('提問',2,true)]);r.engine.changed();await sent(r);
+    const archived=JSON.stringify(await r.cache.get('records','usage:a'));r.c.chat.splice(0,1);r.engine.changed({deleted:true});await r.engine.maintenance;
+    const log=r.engine.snapshot().usages[0];assert.equal(log.sourceChanged,true);assert.equal(log.items[0].sourceState,'missing');
+    assert.equal(log.items[0].body,'刪除秘密');assert.equal(log.items[1].index,1);assert.equal(log.items[1].currentIndex,0);
+    assert.equal(JSON.stringify(await r.cache.get('records','usage:a')),archived);
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');assert.ok(!JSON.stringify(core).includes('刪除秘密'));
+    assert.equal(r.engine.snapshot().usages[0].id,log.id,'unobserved selection must not replace latest receipt');
+});
+
+test('preview, quiet events and aborted stale requests do not enter sent journal',async()=>{
+    const r=rig();r.engine.changed();const first=await sent(r);
+    await r.engine.preview();r.engine.captureFinal({type:'normal',messages:[]});assert.equal(r.engine.snapshot().usages.length,1);
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');r.engine.captureFinal({type:'quiet',messages:[]});
+    assert.equal(r.engine.snapshot().usages[0].id,first.id);
+    r.c.chat.pop();r.engine.changed({deleted:true});const stale={type:'normal',messages:[{role:'assistant',content:'stale'}]};r.engine.captureFinal(stale);
+    assert.throws(()=>JSON.stringify(stale),/生成已取消/);assert.equal(r.engine.snapshot().usages.length,1);
+});
+
+test('actual sends are separate immutable receipts, deduplicated and capped at twenty per chat',async()=>{
+    const r=rig();r.engine.changed();const first=await sent(r);r.engine.last.items[0].body='mutated working trace';
+    assert.equal(r.engine.snapshot().usages[0].items[0].body,first.items[0].body);
+    for(let i=0;i<22;i++)await sent(r);
+    assert.equal(r.engine.snapshot().usages.length,20);assert.equal((await r.cache.get('records','usage:a')).length,20);
+    assert.ok(!r.engine.snapshot().usages.some(x=>x.id===first.id));const latest=r.engine.snapshot().usages[0];r.engine.rememberUsage(latest);await r.engine.usageWrite;
+    assert.equal(r.engine.snapshot().usages.length,20);assert.equal(r.engine.snapshot().usages[0].id,latest.id);
+});
+
+test('journal isolates chat switches, restores each chat and ignores late loads from the previous chat',async()=>{
+    const r=rig();r.engine.changed();const first=await sent(r);const get=r.cache.get.bind(r.cache);let release;
+    r.cache.get=(s,k)=>k==='usage:a'?new Promise(resolve=>{release=resolve;}):get(s,k);
+    r.engine.loadUsage('a');r.c.chatId='b';r.engine.changed();release([first]);await settle();assert.equal(r.engine.snapshot().usages.length,0);
+    const second=await sent(r);assert.equal(r.engine.snapshot().usages.length,1);assert.notEqual(second.id,first.id);
+    r.cache.get=get;r.c.chatId='a';r.engine.changed();await settle();assert.equal(r.engine.snapshot().usages[0].id,first.id);
+});
+
+test('legacy observed trace migrates even after source deletion, while unobserved trace never migrates',async()=>{
+    const r=rig();r.engine.changed();const receipt=await sent(r);await r.cache.put('records','usage:a',[]);r.c.chat.pop();
+    const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();await reopened.usageWrite;
+    assert.equal(reopened.last,null);assert.equal(reopened.snapshot().usages[0].id,receipt.id);
+    const pending={...receipt,id:'pending',stage:'awaiting-final',final:undefined};await r.cache.put('records','trace:b',pending);
+    r.c.chatId='b';reopened.changed();await settle();assert.deepEqual(reopened.snapshot().usages,[]);
+});
+
+test('failed journal storage is visible without blocking send, then next write recovers both receipts',async()=>{
+    const r=rig();r.engine.changed();const append=r.cache.appendUsage.bind(r.cache);r.cache.appendUsage=async()=>{throw Error('full');};
+    const first=await sent(r);assert.ok(first);assert.match(r.engine.snapshot().usageError,/保存失敗/);
+    r.cache.appendUsage=append;await sent(r);assert.equal(r.engine.snapshot().usageError,'');assert.equal((await r.cache.get('records','usage:a')).length,2);
+});
+
+test('rebuilding summaries preserves sent journal and recorded bodies',async()=>{
+    const r=rig();ready(r);r.engine.changed();const first=await sent(r);await r.engine.refreshAll();await r.engine.tick();await r.engine.tick();
+    assert.equal(r.engine.snapshot().usages[0].id,first.id);assert.equal(r.engine.snapshot().usages[0].items[0].body,first.items[0].body);
 });

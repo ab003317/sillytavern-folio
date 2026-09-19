@@ -4,7 +4,7 @@
 <div class="chat-placeholder">在港口等一封回信。</div><div id="extensions_settings2"></div><div id="chat"></div><div id="extensionsMenu"></div>
 <script>
 const listeners=new Map();
-const names=['APP_READY','CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_DELETED','MESSAGE_SWIPED','MESSAGE_SENT','MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED','USER_MESSAGE_RENDERED','GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED','MAIN_API_CHANGED','CHATCOMPLETION_SOURCE_CHANGED','CHATCOMPLETION_MODEL_CHANGED','CONNECTION_PROFILE_LOADED'];
+const names=['APP_READY','CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_DELETED','MESSAGE_SWIPED','MESSAGE_SENT','MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED','USER_MESSAGE_RENDERED','GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED','MAIN_API_CHANGED','CHATCOMPLETION_SOURCE_CHANGED','CHATCOMPLETION_MODEL_CHANGED','CONNECTION_PROFILE_LOADED','CHAT_COMPLETION_SETTINGS_READY'];
 const eventTypes=Object.fromEntries(names.map(x=>[x,x]));
 window.events={on:(type,fn)=>{if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn);},removeListener:(type,fn)=>listeners.set(type,(listeners.get(type)||[]).filter(x=>x!==fn)),emit:async(type,...args)=>{for(const fn of listeners.get(type)||[])await fn(...args);}};
 window.testCalls=[];window.saves=0;
