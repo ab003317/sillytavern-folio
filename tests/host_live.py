@@ -51,6 +51,11 @@ def route_request(route):
         calls.append(entry);start=time.monotonic()
         try:
             response=route.fetch(timeout=65000);entry.update(status=response.status,seconds=round(time.monotonic()-start,2))
+            try:
+                payload=response.json();choice=(payload.get('choices') or [{}])[0]
+                err=payload.get('error');entry.update(responseKeys=list(payload.keys()),errorType=err.get('type') if isinstance(err,dict) else type(err).__name__ if err else None,errorCode=err.get('code') if isinstance(err,dict) else None,contentLength=len(str(choice.get('message',{}).get('content') or '')),finishReason=choice.get('finish_reason'))
+            except Exception:
+                entry['responseFormat']='non-json'
             route.fulfill(response=response)
         except Exception:
             entry['status']='network-error';route.fulfill(status=504,body='Live fixture request timed out')
@@ -91,7 +96,7 @@ with sync_playwright() as p:
           document.querySelector('#folio-wand')?.remove();document.querySelector('.folio-dialog')?.remove();ui=mountUI(engine);
           window.liveFixture={engine,ui,fixture,host,chat,dispose:()=>{engine.dispose();ui.dispose();}};
           const settingsBefore=JSON.stringify(real.chatCompletionSettings);
-          for(let i=0;i<4;i++)await engine.tick();
+          for(let i=0;i<4;i++){await engine.tick();if(engine.warning&&!engine.snapshot().ready)throw Error('First live summary failed: '+engine.warning);}
           if(engine.snapshot().ready!==3)throw Error('Live summaries incomplete: '+engine.warning+' / '+engine.status);
           const summarySaves=saves;await engine.tick();if(saves!==summarySaves)throw Error('Completed summary repeated');
           const source=JSON.stringify(chat),core=structuredClone(chat),previous=window.folioIntercept;

@@ -1,5 +1,22 @@
 import { chooseModel, estimatedTokens } from './core.js';
 
+export function helperPayload(model) {
+    // ST's custom backend only forwards extra vendor fields through this YAML/JSON field.
+    // DeepSeek Flash defaults to thinking: a tiny output cap can otherwise produce no answer.
+    const overrides={include_reasoning:false};
+    if(/(?:^|\/)deepseek-(?:flash|pro|v4(?:[-/]|$))/i.test(model))overrides.custom_include_body=JSON.stringify({thinking:{type:'disabled'}});
+    return overrides;
+}
+export function completionText(data) {
+    const choice=data?.choices?.[0],message=choice?.message?.content??data?.content??data?.text;
+    const text=Array.isArray(message)?message.filter(x=>x.type==='text').map(x=>x.text).join('\n'):message;
+    if(typeof text!=='string'||!text.trim()){
+        const error=new Error(choice?.finish_reason==='length'?'助手用盡輸出額度但未回傳摘要；可能仍在思考，請改用非思考模型':'助手沒有回傳正文，請在記憶助手頁測試連線');
+        error.name='FolioResponseError';throw error;
+    }
+    return text;
+}
+
 export function uid() {
     return Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2,'0')).join('');
 }
@@ -75,6 +92,7 @@ export class Host {
         const c = this.context();
         if (c.mainApi !== 'openai') throw new Error('目前先支援酒館的「聊天補全」連線；原本聊天不受影響');
         const helper=this.helper();
+        if(!['auto','current'].includes(this.settings().helperConnection)&&!helper.profile)throw new Error('原助手連線已不存在，請在「記憶助手」重新選擇');
         if(helper.profile){
             const controller=new AbortController();const abort=()=>controller.abort(signal?.reason??new DOMException('Cancelled','AbortError'));
             signal?.throwIfAborted();signal?.addEventListener('abort',abort,{once:true});
@@ -82,12 +100,10 @@ export class Host {
             this.model=helper.model;
             try{
                 const data=await c.ConnectionManagerRequestService.sendRequest(helper.profile.id,[{role:'system',content:system},{role:'user',content:prompt}],selection?1200:850,
-                    {stream:false,signal:controller.signal,extractData:true,includePreset:false,includeInstruct:false},
-                    {model:helper.model,temperature:.2,stream:false,type:'quiet'});
-                const text=typeof data==='string'?data:data?.content;
-                if(typeof text!=='string'||!text.trim())throw new Error('記憶助手沒有回傳正文');
-                return text;
-            }catch(e){if(controller.signal.aborted)throw controller.signal.reason;throw new Error('記憶助手請求失敗，請在「記憶助手」頁測試連線');}
+                    {stream:false,signal:controller.signal,extractData:false,includePreset:false,includeInstruct:false},
+                    {model:helper.model,temperature:.2,stream:false,type:'quiet',...helperPayload(helper.model)});
+                return typeof data==='string'?data:completionText(data);
+            }catch(e){if(controller.signal.aborted)throw controller.signal.reason;if(e.name==='FolioResponseError')throw e;throw new Error('記憶助手請求失敗，請在「記憶助手」頁測試連線');}
             finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
         }
         const api = await this.api();
@@ -112,6 +128,7 @@ export class Host {
                 // No host generation events or mutable global model overrides; this is a separate request.
                 for (const key of ['tools','tool_choice','stop','logprobs','top_logprobs','logit_bias','n']) delete body[key];
                 body.stream = false;
+                Object.assign(body,helperPayload(model));
                 const response = await fetch('/api/backends/chat-completions/generate', {
                     method:'POST', headers:c.getRequestHeaders(), body:JSON.stringify(body), signal:controller.signal,
                 });
@@ -121,10 +138,8 @@ export class Host {
                     throw new Error(`摘要連線回應 ${response.status}；${response.status === 429 ? '稍後自動重試' : '請檢查酒館原本的連線'}`);
                 }
                 const data = await response.json();
-                const message = data.choices?.[0]?.message?.content ?? data.content ?? data.text;
-                const text = Array.isArray(message) ? message.filter(x => x.type === 'text').map(x => x.text).join('\n') : message;
-                if (data.error || typeof text !== 'string' || !text.trim()) throw new Error('摘要模型沒有回傳正文');
-                return text;
+                if(data.error)throw new Error('摘要連線回傳錯誤，請在記憶助手頁測試連線');
+                return completionText(data);
             }
             throw new Error('目前連線沒有可用的摘要模型');
         } catch (error) {
