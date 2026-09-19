@@ -109,7 +109,7 @@ export class Host {
         if(helper.profile){
             const controller=new AbortController();const abort=()=>controller.abort(signal?.reason??new DOMException('Cancelled','AbortError'));
             signal?.throwIfAborted();signal?.addEventListener('abort',abort,{once:true});
-            const timer=setTimeout(()=>controller.abort(new Error('記憶助手連線超時，稍後可重試')),selection?30000:60000);
+            const timer=setTimeout(()=>controller.abort(new Error(`${label}連線超時，稍後可重試`)),60000);
             this.model=helper.model;this.models[role]=helper.model;
             try{
                 const data=await c.ConnectionManagerRequestService.sendRequest(helper.profile.id,[{role:'system',content:system},{role:'user',content:prompt}],selection?1200:850,
@@ -127,7 +127,7 @@ export class Host {
         const controller = new AbortController();
         const abort = () => controller.abort(signal?.reason ?? new DOMException('Cancelled', 'AbortError'));
         signal?.throwIfAborted(); signal?.addEventListener('abort', abort, {once:true});
-        const timer = setTimeout(() => controller.abort(new Error('摘要連線超時，稍後自動重試')), selection ? 30000 : 60000);
+        const timer = setTimeout(() => controller.abort(new Error(`${label}連線超時，稍後可重試`)),60000);
         try {
             for (const model of [helper.model]) {
                 controller.signal.throwIfAborted(); this.model = model;this.models[role]=model;

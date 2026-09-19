@@ -136,9 +136,11 @@ with sync_playwright() as p:
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-selection.png'))
         page.get_by_role('tab',name='記憶助手').click()
         page.get_by_role('button',name='測試總結模型',exact=True).click()
-        page.wait_for_function("liveFixture.engine.connectionTests.summary?.ok===true",timeout=65000)
+        page.wait_for_function("liveFixture.engine.connectionTests.summary && !liveFixture.engine.connectionTests.summary.pending",timeout=65000)
+        assert page.evaluate('liveFixture.engine.connectionTests.summary.ok'),page.evaluate('liveFixture.engine.connectionTests.summary')
         page.get_by_role('button',name='測試提取模型',exact=True).click()
-        page.wait_for_function("liveFixture.engine.connectionTests.selection?.ok===true",timeout=65000)
+        page.wait_for_function("liveFixture.engine.connectionTests.selection && !liveFixture.engine.connectionTests.selection.pending",timeout=65000)
+        assert page.evaluate('liveFixture.engine.connectionTests.selection.ok'),page.evaluate('liveFixture.engine.connectionTests.selection')
         result['bothModelButtons']=True
         page.locator('.folio-content').evaluate('(e)=>e.scrollTop=0')
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-helper.png'))
