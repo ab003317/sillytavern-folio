@@ -74,6 +74,10 @@ with sync_playwright() as p:
           return {receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
         }""",PREFIX)
         assert result=={'receiptCount':1,'kept':5,'originalChatUntouched':True,'settingsUntouched':True},result
+        installed_popup=page.locator('.folio-auto-popup').last
+        assert installed_popup.is_visible()
+        assert '摘要 2/3 頁' in installed_popup.inner_text() and '向量 2/3 頁' in installed_popup.inner_text()
+        installed_popup.screenshot(path=str(OUT/'lan-auto-progress.png'))
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-dashboard-desktop.png'))
         page.set_viewport_size({'width':390,'height':844});page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-dashboard-mobile.png'))
         assert page.locator('.folio-content').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
@@ -99,6 +103,6 @@ with sync_playwright() as p:
         assert final
         assert len(mock_sends)==3,mock_sends
         assert not errors,errors
-        print(json.dumps({'passed':True,'installedVersion':version,'nativeWand':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
+        print(json.dumps({'passed':True,'installedVersion':version,'nativeWand':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
     finally:
         browser.close()
