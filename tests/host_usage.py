@@ -73,11 +73,17 @@ with sync_playwright() as p:
           t.mount=()=>{t.engine=new Engine(host,cache,embedder,s=>t.ui?.update(s));t.engine.schedule=()=>{};t.ui=mountUI(t.engine);t.engine.changed();for(const p of t.engine.pages())if(p.record?.done)t.engine.vectors.set(t.engine.vectorKey(p.record),[[1,0]]);t.engine.emit();window.folioIntercept=(...args)=>t.engine.intercept(...args);};
           t.observe=body=>t.engine.captureFinal(body);real.eventSource.on(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,t.observe);t.mount();
           const {runGenerationInterceptors}=await import('/scripts/extensions.js');
+          t.engine.generationStarted();t.ui.open();document.querySelector('#folio-view-run .folio-rebuild .folio-primary').click();await Promise.resolve();
+          const manualPopup=[...document.querySelectorAll('.folio-auto-popup')].at(-1);
+          const installedManualQueue={queued:t.engine.snapshot().rebuildQueued,popupVisible:!manualPopup.hidden,popupText:manualPopup.textContent};
+          t.engine.queuedRebuild=null;t.engine.generating=false;t.engine.emit();document.querySelector('.folio-dialog').close();
           t.sequence=0;t.send=async()=>{const core=structuredClone(chat);if(await runGenerationInterceptors(core,10000,'normal'))throw Error('Unexpected abort');const api=await host.api();const answer=await api.sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));if(typeof answer==='function'){for await(const part of answer()){};}const n=++t.sequence;chat.push({mes:'合成驗收：角色回覆 '+n,is_user:false,name:'船長',send_date:'usage-result-'+n,extra:{}});t.engine.newResponse();await t.engine.usageWrite;return core;};
           await t.send();t.first=t.engine.snapshot().usages[0].id;t.ui.open();
-          return {oldBoundary,receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
+          return {oldBoundary,installedManualQueue,receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
         }""",PREFIX)
-        assert result=={'oldBoundary':{'recorded':False,'manualPending':1},'receiptCount':1,'kept':5,'originalChatUntouched':True,'settingsUntouched':True},result
+        assert result['oldBoundary']=={'recorded':False,'manualPending':1},result
+        assert result['installedManualQueue']['queued'] and result['installedManualQueue']['popupVisible'] and '已排隊，等待回覆完成' in result['installedManualQueue']['popupText'],result
+        assert {key:result[key] for key in ('receiptCount','kept','originalChatUntouched','settingsUntouched')}=={'receiptCount':1,'kept':5,'originalChatUntouched':True,'settingsUntouched':True},result
         installed_popup=page.locator('.folio-auto-popup').last
         assert installed_popup.is_visible()
         assert '摘要 0/1 頁' in installed_popup.inner_text() and '向量 0/1 頁' in installed_popup.inner_text()
@@ -107,6 +113,6 @@ with sync_playwright() as p:
         assert final
         assert len(mock_sends)==3,mock_sends
         assert not errors,errors
-        print(json.dumps({'passed':True,'installedVersion':version,'oldChatAutomaticCalls':0,'oldChatManualPending':1,'nativeWand':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
+        print(json.dumps({'passed':True,'installedVersion':version,'oldChatAutomaticCalls':0,'oldChatManualPending':1,'nativeWand':True,'installedManualQueue':True,'installedManualPopup':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
     finally:
         browser.close()
