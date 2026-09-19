@@ -30,7 +30,7 @@ export class Engine {
             playerInput:p.playerInput,title:p.record?.title||excerpt(p.body,32),summary:p.record?.summary||p.record?.parts?.join('\n')||'',
             ready:!!p.record?.done,indexed:!!p.record?.done&&this.vectors.has(this.vectorKey(p.record)),pinned:!!p.record?.pinned,
             parts:p.record?.parts?.length??0,totalParts:splitBody(p.body).length,edited:!!p.record?.edited}));
-        const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??''}];}));
+        const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
         return {entries,total:entries.length,ready:entries.filter(p=>p.ready).length,indexed:entries.filter(p=>p.indexed).length,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController,notice:this.notice,helpers,

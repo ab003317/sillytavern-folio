@@ -1,4 +1,5 @@
 import { estimatedTokens } from './core.js';
+import { PROVIDERS, directConfig, providerRequest, modelIds, apiError } from './providers.js';
 export const MODEL_ROLES = {summary:'總結模型',selection:'提取模型'};
 
 export function helperPayload(model) {
@@ -67,7 +68,8 @@ export class Host {
     helper(role='summary') {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
         const config=this.settings().helpers[role],profile=config.connection==='current'?null:this.profiles().find(p=>p.id===config.connection);
-        return {profile,connection:config.connection,model:config.model.trim(),label:profile?.name||'目前聊天連線',role};
+        return {profile,connection:config.connection,model:config.model.trim(),label:config.connection==='direct'?(PROVIDERS[config.provider]?.label??'自訂接口'):profile?.name||'目前聊天連線',role,
+            provider:config.provider??'',baseUrl:config.baseUrl??'',hasKey:!!config.apiKey};
     }
     configureHelper(role,connection,model='') {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
@@ -75,6 +77,36 @@ export class Host {
         if(connection!=='current'&&!this.profiles().some(p=>p.id===connection))throw new Error('連線已不存在，請重新選擇');
         this.settings().helpers[role]={connection,model:model.trim()};
         this.rejected.clear();this.context().saveSettingsDebounced();
+    }
+    configureDirect(role,input) {
+        if(!MODEL_ROLES[role])throw new Error('未知模型用途');
+        const config=directConfig(input,this.settings().helpers[role]);
+        this.settings().helpers[role]=config;this.models[role]='';this.context().saveSettingsDebounced();
+    }
+    async fetchModels(role,input,{signal}={}) {
+        if(!MODEL_ROLES[role])throw new Error('未知模型用途');
+        const config=directConfig(input,this.settings().helpers[role],false);
+        return modelIds(await this.directRequest(config,{models:true,signal},'取得模型列表'));
+    }
+    async directRequest(config,options,task) {
+        const controller=new AbortController(),signal=options.signal;
+        const abort=()=>controller.abort(signal.reason??new DOMException('Cancelled','AbortError'));
+        signal?.throwIfAborted();signal?.addEventListener('abort',abort,{once:true});
+        const timer=setTimeout(()=>controller.abort(new Error(`${task}超時，請稍後重試`)),options.models?30000:60000);
+        try{
+            const response=await fetch('/api/backends/chat-completions/'+(options.models?'status':'generate'),{
+                method:'POST',headers:this.context().getRequestHeaders(),body:JSON.stringify(providerRequest(config,options)),signal:controller.signal,
+            });
+            if(!response.ok){await response.body?.cancel();throw apiError(response.status,task);}
+            let data;try{data=await response.json();}catch{throw new Error(`${task}未返回 JSON；請檢查 API 網址，不要填網頁登入地址`);}
+            if(data?.error)throw new Error(`${task}被接口拒絕；請核對來源、網址、金鑰及模型，不會使用其他連線`);
+            controller.signal.throwIfAborted();return data;
+        }catch(error){
+            if(controller.signal.aborted)throw controller.signal.reason;
+            // Never display raw transport/server errors: they may echo Authorization or a URL key.
+            if(error instanceof TypeError)throw new Error(`${task}無法連到酒館後端，請檢查網路後重試`);
+            throw error;
+        }finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
     }
     async modelChoices(role='summary',connection=this.helper(role).connection) {
         const helper=this.helper(role),profile=this.profiles().find(p=>p.id===connection);
@@ -102,9 +134,13 @@ export class Host {
     }
     async complete(system, prompt, {signal, selection = false} = {}) {
         const c = this.context();
-        if (c.mainApi !== 'openai') throw new Error('目前先支援酒館的「聊天補全」連線；原本聊天不受影響');
         const role=selection?'selection':'summary',helper=this.helper(role),label=MODEL_ROLES[role];
         if(!helper.model)throw new Error(`請在「記憶助手」填寫${label}`);
+        if(helper.connection==='direct'){
+            const config=directConfig(this.settings().helpers[role]);this.model=config.model;this.models[role]=config.model;
+            return completionText(await this.directRequest(config,{signal,selection,messages:[{role:'system',content:system},{role:'user',content:prompt}]},label));
+        }
+        if (c.mainApi !== 'openai') throw new Error('目前先支援酒館的「聊天補全」連線；原本聊天不受影響');
         if(helper.connection!=='current'&&!helper.profile)throw new Error(`${label}的連線已不存在，請重新選擇`);
         if(helper.profile){
             const controller=new AbortController();const abort=()=>controller.abort(signal?.reason??new DOMException('Cancelled','AbortError'));

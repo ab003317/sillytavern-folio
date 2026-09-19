@@ -1,3 +1,4 @@
+import { mountApiForms } from './api-ui.js';
 let nextId=0;
 function el(tag,cls='',text=''){const n=document.createElement(tag);n.className=cls;if(text)n.textContent=text;return n;}
 function button(text,action,cls=''){const n=el('button',cls,text);n.type='button';n.addEventListener('click',action);return n;}
@@ -48,23 +49,8 @@ export function mountUI(engine){
     const previewButton=button('試跑選頁（不生成正文）',perform(async()=>{await engine.preview(query.value);renderSelection();}),'folio-primary');
     const previewBar=el('div','folio-toolbar');previewBar.append(previewButton,info('用這段文字做一次真實查頁，會使用記憶助手並產生短請求費用。不生成角色回覆、不保存為聊天。候選只來自完成的小摘要；所選頁取回的是完整正文。'));
     const selectionBody=el('div');panels.selection.append(heading('這次查了哪些頁？'),query,previewBar,selectionBody);
-    panels.helper.append(heading('兩個模型，分開設定','選酒館已保存的連線，再填寫模型名稱。兩個用途可以用相同模型，也可以用不同供應商。不改主聊天模型；設定失敗時不會偷偷換成其他模型。'),el('p','folio-prose','總結模型負責寫小摘要；提取模型負責看小摘要，選出這次需要的正文。兩欄各自保存、各自測試。舊助手設定已帶入兩欄，可直接修改。'));
-    const helperFields={},helperGrid=el('div','folio-helper-grid');panels.helper.append(helperGrid);
-    for(const [role,label,description]of [['summary','總結模型','輸入：清理後正文與玩家背景。輸出：標題、小摘要。'],['selection','提取模型','輸入：本次問題與候選小摘要。輸出：需要取回的正文頁及原因。']]){
-        const section=el('section','folio-helper-section'),connection=el('select'),model=el('input'),list=el('datalist');
-        connection.id=`folio-${role}-connection`;model.id=`folio-${role}-model`;list.id=`folio-${role}-models`;model.setAttribute('list',list.id);model.required=true;model.autocomplete='off';model.placeholder=`填寫${label} ID`;
-        const connectionLabel=el('label','folio-field',`${label}連線`);connectionLabel.htmlFor=connection.id;connectionLabel.append(connection);
-        const modelLabel=el('label','folio-field',`${label}名稱`);modelLabel.htmlFor=model.id;modelLabel.append(model,list);
-        const configured=el('p','folio-muted'),result=el('div','folio-connection-result');
-        const field={connection,model,list,configured,result,dirty:false,optionsKey:'',version:0};helperFields[role]=field;
-        const loadChoices=async()=>{const version=++field.version;try{const ids=await engine.host.modelChoices?.(role,connection.value)??[];if(version===field.version)list.replaceChildren(...ids.map(id=>{const o=el('option');o.value=id;return o;}));}catch{}};
-        const save=()=>{engine.host.configureHelper(role,connection.value,model.value);engine.cancel();engine.connectionTests[role]=null;field.dirty=false;engine.retry();};
-        connection.addEventListener('change',()=>{field.dirty=true;model.value=state.profiles.find(p=>p.id===connection.value)?.model??'';configured.textContent='尚未保存；填好模型後按保存。';loadChoices();});
-        model.addEventListener('input',()=>{field.dirty=true;configured.textContent='尚未保存；不影響目前正在使用的設定。';});
-        const actions=el('div','folio-toolbar');field.test=button(`測試${label}`,perform(async()=>{if(field.dirty)save();await engine.testHelper(role);}));
-        actions.append(button(`保存${label}`,perform(save),'folio-primary'),field.test);section.append(heading(label),el('p','folio-muted',description),connectionLabel,modelLabel,configured,actions,result);helperGrid.append(section);field.loadChoices=loadChoices;
-    }
-    panels.helper.append(heading('向量已內建'),el('p','folio-prose','BGE-small-zh-v1.5 在本機瀏覽器運行。這不是第三個需要填寫的模型，不用向量 API、Ollama 或額外程式。'));
+    const apiForms=mountApiForms(engine,panels.helper,{el,button,info,heading});
+    dialog.addEventListener('close',()=>apiForms.conceal());
     function open(){state=engine.snapshot();update(state);if(!dialog.open)dialog.showModal();setTab(tab);tabButtons[tab].focus();}
     function setTab(key){tab=key;for(const k of Object.keys(labels)){panels[k].hidden=k!==key;tabButtons[k].setAttribute('aria-selected',String(k===key));tabButtons[k].tabIndex=k===key?0:-1;}render();}
     function renderRun(){
@@ -123,17 +109,7 @@ export function mountUI(engine){
         const expanded=new Set([...selectionBody.querySelectorAll('details[open]')].map(d=>d.firstElementChild.textContent));selectionBody.replaceChildren(...nodes);for(const d of selectionBody.querySelectorAll('details'))d.open=expanded.has(d.firstElementChild.textContent);
     }
     function renderHelper(){
-        for(const [role,field]of Object.entries(helperFields)){
-            const config=state.helpers[role],{connection,model,configured,result}=field;
-            const options=[{id:'current',name:'目前聊天的連線（模型分開指定）'},...state.profiles];
-            for(const id of [config.connection,field.dirty?connection.value:null].filter(Boolean))if(!options.some(p=>p.id===id))options.push({id,name:'原連線已不存在，請重新選擇'});
-            const key=JSON.stringify(options);if(connection.dataset.options!==key){const draft=connection.value;connection.replaceChildren(...options.map(p=>{const o=el('option','',p.name);o.value=p.id;return o;}));connection.dataset.options=key;connection.value=field.dirty?draft:config.connection;}
-            if(!field.dirty){connection.value=config.connection;model.value=config.model;configured.textContent=`已保存：${config.label||'目前聊天連線'} / ${config.model||'尚未填寫模型'}${config.lastModel?`；最近呼叫：${config.lastModel}`:''}`;}
-            const optionsKey=connection.value+JSON.stringify(state.profiles);if(field.optionsKey!==optionsKey){field.optionsKey=optionsKey;field.loadChoices();}
-            field.test.disabled=state.busy;const outcome=state.connectionTests[role];result.replaceChildren();
-            if(outcome)result.append(el('p',outcome.ok?'folio-observed':'folio-muted',outcome.pending?'正在測試這個用途…':outcome.ok?`${outcome.model} 測試通過，用時 ${(outcome.ms/1000).toFixed(1)} 秒。`:`測試未通過：${outcome.error}`));
-            if(outcome?.ok)result.append(el('p','folio-summary-text',outcome.summary));
-        }
+        apiForms.render(state);
     }
     function render(){if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}
     function update(next){
@@ -142,5 +118,5 @@ export function mountUI(engine){
         entry.title=next.status;if(dialog.open)render();
     }
     setTab('run');update(state);
-    return {update,open,dispose(){entry.remove();dialog.remove();}};
+    return {update,open,dispose(){apiForms.dispose();entry.remove();dialog.remove();}};
 }

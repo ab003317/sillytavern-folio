@@ -75,7 +75,7 @@ with sync_playwright() as p:
         page.goto(ORIGIN,wait_until='domcontentloaded',timeout=60000)
         page.wait_for_selector('#folio-wand',state='attached',timeout=60000)
         installed=page.evaluate("""async(prefix)=>({version:(await(await fetch(prefix+'manifest.json')).json()).version,wand:!!document.querySelector('#extensionsMenu #folio-wand')})""",PREFIX)
-        assert installed['version']=='0.3.0' and installed['wand'],installed
+        assert installed['version']==json.loads((ROOT/'manifest.json').read_text(encoding='utf-8'))['version'] and installed['wand'],installed
         page.locator('#extensionsMenuButton').click()
         page.locator('#folio-wand').click()
         page.locator('.folio-dialog').wait_for(state='visible')
