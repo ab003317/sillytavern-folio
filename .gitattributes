@@ -1,0 +1,9 @@
+*.onnx binary
+*.wasm binary
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+assets/bge-small-zh-v1.5/vocab.txt binary
+vendor/ort/* binary

@@ -1,0 +1,29 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Folio isolated rehearsal</title>
+<link rel="stylesheet" href="/folio/style.css">
+<style>body{background:#243442;color:#eef4f7;margin:20px;font-family:system-ui}#extensions_settings2{max-width:600px}.chat-placeholder{font-family:serif;font-size:22px;color:#a8bbc5;padding:35px 10px}button,input{font:inherit}</style>
+<div class="chat-placeholder">在港口等一封回信。</div><div id="extensions_settings2"></div><div id="chat"></div>
+<script>
+const listeners=new Map();
+const names=['APP_READY','CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_DELETED','MESSAGE_SWIPED','MESSAGE_SENT','MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED','USER_MESSAGE_RENDERED','GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED','MAIN_API_CHANGED','CHATCOMPLETION_SOURCE_CHANGED','CHATCOMPLETION_MODEL_CHANGED','CONNECTION_PROFILE_LOADED'];
+const eventTypes=Object.fromEntries(names.map(x=>[x,x]));
+window.events={on:(type,fn)=>{if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn);},removeListener:(type,fn)=>listeners.set(type,(listeners.get(type)||[]).filter(x=>x!==fn)),emit:async(type,...args)=>{for(const fn of listeners.get(type)||[])await fn(...args);}};
+window.testCalls=[];window.saves=0;
+const chat=Array.from({length:7},(_,i)=>({name:i%2?'船長':'玩家',is_user:i%2===0,send_date:'fixture-'+i,
+ mes:[
+ '我走進港口，問起那封多年沒有寄出的信。',
+ '<think>不應被保存的推理。</think>船長取出一封藍色的信，交給我。我答應在冬天前把信送到山城。',
+ '我問船長要付多少船費。',
+ '船長搖頭，說舊日的救命之恩已經抵過船費。我們在碼頭道別。',
+ '我在街市买了一份牛肉麵。',
+ '晚飯後，我把銀色鑰匙放進背包，走向山城的驛站。',
+ '我還欠船長什麼約定？'
+ ][i],extra:{}}));
+const saved=localStorage.getItem('folio-fixture-chat');if(saved)chat.splice(0,chat.length,...JSON.parse(saved));
+window.testContext={chat,chatId:'fictional-fixture',characterId:0,characters:[{avatar:'synthetic.png'}],groupId:null,chatMetadata:{},mainApi:'openai',
+ extensionSettings:JSON.parse(localStorage.getItem('folio-fixture-settings')||'{}'),eventSource:events,eventTypes,
+ chatCompletionSettings:{chat_completion_source:'custom',custom_model:'fixture-large',custom_url:'https://existing-provider.invalid/v1',openai_max_tokens:2000,stream_openai:true},
+ getRequestHeaders:()=>({'Content-Type':'application/json'}),getTokenCountAsync:async(text)=>Math.ceil(text.length*1.5),
+ saveChat:async()=>{window.saves++;localStorage.setItem('folio-fixture-chat',JSON.stringify(chat));},
+ saveSettingsDebounced:()=>localStorage.setItem('folio-fixture-settings',JSON.stringify(testContext.extensionSettings))};
+window.SillyTavern={getContext:()=>testContext};
+</script><script type="module">await import('/folio/index.js');await events.emit('APP_READY');window.fixtureReady=true;</script></html>

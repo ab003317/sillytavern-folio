@@ -1,0 +1,12 @@
+{
+  "display_name": "Folio 書頁記憶",
+  "loading_order": 90,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "ab003317",
+  "version": "0.1.0",
+  "homePage": "https://github.com/ab003317/sillytavern-folio",
+  "generate_interceptor": "folioIntercept"
+}
