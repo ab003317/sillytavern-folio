@@ -60,6 +60,10 @@ with sync_playwright() as p:
           const real=SillyTavern.getContext(),originalChat=JSON.stringify(real.chat),originalSettings=JSON.stringify(real.chatCompletionSettings);
           const {Host}=await import(prefix+'src/host.js'),{Engine}=await import(prefix+'src/engine.js'),{Cache}=await import(prefix+'src/store.js');
           const {mountUI}=await import(prefix+'src/ui.js'),{bookPages,newRecord,KEY}=await import(prefix+'src/core.js');
+          const oldChat=[{mes:'合成驗收：打開時已經存在的舊正文',is_user:false,name:'船長',send_date:'old-boundary',extra:{}}];
+          const oldFixture={...real,chat:oldChat,chatId:'folio-old-boundary',mainApi:'openai',extensionSettings:{folio:{enabled:true,account:'folio-old-boundary'}},saveChat:async()=>{throw Error('Old chat must not be saved');},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>text.length};
+          const oldHost=new Host(()=>oldFixture),oldCache=new Cache('folio-installed-old-boundary'),oldEmbedder={stop(){},embed:async()=>{throw Error('Old chat must not be embedded');}};
+          const oldEngine=new Engine(oldHost,oldCache,oldEmbedder);oldEngine.schedule=()=>{};oldEngine.changed();await oldEngine.tick();const oldBoundary={recorded:!!bookPages(oldChat)[0].record,manualPending:oldEngine.snapshot().auto.manualPending};oldEngine.dispose();
           const chat=['合成驗收：船長的藍色信封要交給誰？','合成驗收：船長約定冬天前送到山城，收信人是旅店主人。','合成驗收：我收好信，走進旅店。','合成驗收：旅店主人留下銀色鑰匙，請旅人明日到碼頭。','合成驗收：我明天要去哪裡？'].map((mes,i)=>({mes,is_user:i%2===0,name:i%2?'船長':'玩家',send_date:'folio-usage-'+i,extra:{}}));
           for(const p of bookPages(chat)){const r=newRecord(p.message,p.playerInput);r.done=true;r.summary=p.body;r.title=p.number===1?'藍色信件的約定':'銀色鑰匙';p.message.extra[KEY]=r;}
           const fixture={...real,chat,chatId:'folio-usage-only',mainApi:'openai',extensionSettings:{folio:{enabled:true,account:'folio-usage-only'}},saveChat:async()=>{throw Error('Unexpected chat save');},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>text.length};
@@ -69,14 +73,14 @@ with sync_playwright() as p:
           t.mount=()=>{t.engine=new Engine(host,cache,embedder,s=>t.ui?.update(s));t.engine.schedule=()=>{};t.ui=mountUI(t.engine);t.engine.changed();for(const p of t.engine.pages())if(p.record?.done)t.engine.vectors.set(t.engine.vectorKey(p.record),[[1,0]]);t.engine.emit();window.folioIntercept=(...args)=>t.engine.intercept(...args);};
           t.observe=body=>t.engine.captureFinal(body);real.eventSource.on(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,t.observe);t.mount();
           const {runGenerationInterceptors}=await import('/scripts/extensions.js');
-          t.sequence=0;t.send=async()=>{const core=structuredClone(chat);if(await runGenerationInterceptors(core,10000,'normal'))throw Error('Unexpected abort');const api=await host.api();const answer=await api.sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));if(typeof answer==='function'){for await(const part of answer()){};}const n=++t.sequence;chat.push({mes:'合成驗收：角色回覆 '+n,is_user:false,name:'船長',send_date:'usage-result-'+n,extra:{}});t.engine.responseReceived();await t.engine.usageWrite;return core;};
+          t.sequence=0;t.send=async()=>{const core=structuredClone(chat);if(await runGenerationInterceptors(core,10000,'normal'))throw Error('Unexpected abort');const api=await host.api();const answer=await api.sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));if(typeof answer==='function'){for await(const part of answer()){};}const n=++t.sequence;chat.push({mes:'合成驗收：角色回覆 '+n,is_user:false,name:'船長',send_date:'usage-result-'+n,extra:{}});t.engine.newResponse();await t.engine.usageWrite;return core;};
           await t.send();t.first=t.engine.snapshot().usages[0].id;t.ui.open();
-          return {receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
+          return {oldBoundary,receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
         }""",PREFIX)
-        assert result=={'receiptCount':1,'kept':5,'originalChatUntouched':True,'settingsUntouched':True},result
+        assert result=={'oldBoundary':{'recorded':False,'manualPending':1},'receiptCount':1,'kept':5,'originalChatUntouched':True,'settingsUntouched':True},result
         installed_popup=page.locator('.folio-auto-popup').last
         assert installed_popup.is_visible()
-        assert '摘要 2/3 頁' in installed_popup.inner_text() and '向量 2/3 頁' in installed_popup.inner_text()
+        assert '摘要 0/1 頁' in installed_popup.inner_text() and '向量 0/1 頁' in installed_popup.inner_text()
         installed_popup.screenshot(path=str(OUT/'lan-auto-progress.png'))
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-dashboard-desktop.png'))
         page.set_viewport_size({'width':390,'height':844});page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-dashboard-mobile.png'))
@@ -103,6 +107,6 @@ with sync_playwright() as p:
         assert final
         assert len(mock_sends)==3,mock_sends
         assert not errors,errors
-        print(json.dumps({'passed':True,'installedVersion':version,'nativeWand':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
+        print(json.dumps({'passed':True,'installedVersion':version,'oldChatAutomaticCalls':0,'oldChatManualPending':1,'nativeWand':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
     finally:
         browser.close()
