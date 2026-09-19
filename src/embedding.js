@@ -10,6 +10,15 @@ export class Embedder {
         for (const job of this.jobs.values()) { clearTimeout(job.timer); job.reject(new Error(reason)); }
         this.jobs.clear();
     }
+    async cached(texts) {
+        const result=[];
+        for(const text of texts){
+            const entry=await this.cache.get('vectors',MODEL+':'+fingerprint(text)).catch(()=>null);
+            if(entry?.text!==text || entry.vector?.length!==512)return null;
+            result.push(entry.vector);
+        }
+        return result;
+    }
     request(texts, signal) {
         signal?.throwIfAborted();
         clearTimeout(this.idle);

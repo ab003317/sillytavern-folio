@@ -1,107 +1,137 @@
-function el(tag, className, text) {
-    const node = document.createElement(tag); if (className) node.className = className;
-    if (text !== undefined) node.textContent = text; return node;
+let nextId=0;
+function el(tag,cls='',text=''){const n=document.createElement(tag);n.className=cls;if(text)n.textContent=text;return n;}
+function button(text,action,cls=''){const n=el('button',cls,text);n.type='button';n.addEventListener('click',action);return n;}
+function info(text){
+    const wrap=el('span','folio-help'),tip=el('span','folio-tip',text);tip.id=`folio-help-${++nextId}`;tip.hidden=true;
+    const b=button('ⓘ',()=>{tip.hidden=!tip.hidden;b.setAttribute('aria-expanded',String(!tip.hidden));},'folio-info');
+    b.setAttribute('aria-label','說明');b.setAttribute('aria-expanded','false');b.setAttribute('aria-controls',tip.id);wrap.append(b,tip);return wrap;
 }
-function button(text, action, className = '') {
-    const b = el('button', `folio-button ${className}`, text); b.type = 'button'; b.addEventListener('click', action); return b;
-}
-function info(text) {
-    const wrap = el('span', 'folio-info-wrap'), tip = el('span', 'folio-tip', text);
-    tip.hidden = true; tip.id = `folio-tip-${Math.random().toString(36).slice(2)}`;
-    const b = button('ⓘ', () => { tip.hidden = !tip.hidden; b.setAttribute('aria-expanded', String(!tip.hidden)); }, 'folio-info');
-    b.setAttribute('aria-label','說明'); b.setAttribute('aria-expanded','false'); b.setAttribute('aria-controls',tip.id);
-    wrap.append(b,tip); return wrap;
-}
+function heading(text,help){const n=el('h3','',text);if(help)n.append(info(help));return n;}
+function disclosure(label,text,cls=''){const n=el('details',cls);n.append(el('summary','',label),el('div','folio-prose',text));return n;}
+const stamp=t=>new Date(t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
-export function mountUI(engine) {
-    const root = el('section', 'folio-panel'); root.id = 'folio-panel';
-    const header = el('div', 'folio-header');
-    const title = el('h3', 'folio-title', '書頁');
-    const toggleLabel = el('label', 'folio-toggle'), toggle = el('input');
-    toggle.type='checkbox'; toggle.setAttribute('aria-label','自動記憶'); toggleLabel.append(toggle, document.createTextNode('自動記憶'));
-    toggle.addEventListener('change',()=>engine.toggle(toggle.checked));
-    header.append(title, info('正文像書頁，摘要像目錄。每則玩家和角色訊息都會自動整理；要回憶時先查目錄，再把選中的正文放回這次的聊天歷史。原聊天不刪、不永久隱藏。'), toggleLabel);
-    const status = el('p', 'folio-status'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
-    const progress = el('p', 'folio-progress'), warning = el('p', 'folio-warning');
-    const model = el('p','folio-model');
-    const open = button('查閱記憶', ()=>{renderList(); dialog.showModal(); search.focus();}, 'folio-open');
-    const takeover = button('改用書頁（停用 Anima 並刷新）',async event=>{
-        event.currentTarget.disabled=true;
-        try { await engine.host.useFolioInstead(engine.conflict); }
-        catch { warning.hidden=false;warning.textContent='停用尚未保存成功；可在酒館擴充管理停用 Anima 後重新整理。';event.currentTarget.disabled=false; }
-    });
-    takeover.hidden=true;
-    root.append(header,status,progress,warning,open,takeover);
-    const parent = document.querySelector('#extensions_settings2') ?? document.querySelector('#extensions_settings');
-    if (!parent) throw new Error('找不到酒館擴充功能面板');
-    parent.append(root);
-
-    const dialog = el('dialog','folio-dialog'); dialog.setAttribute('aria-label','書頁記憶');
-    const top = el('div','folio-dialog-top');
-    top.append(el('h2','folio-title','記憶目錄'), button('關閉',()=>dialog.close()));
-    const tabs = el('div','folio-tabs'); tabs.setAttribute('role','tablist');
-    let tab = 'all', state = engine.snapshot();
-    const allTab = button('所有書頁',()=>setTab('all'));
-    const usedTab = button('本次取用',()=>setTab('used'));
-    allTab.setAttribute('role','tab'); usedTab.setAttribute('role','tab');
-    for (const b of [allTab,usedTab]) b.addEventListener('keydown',e=>{
-        if (['ArrowLeft','ArrowRight'].includes(e.key)) { e.preventDefault(); setTab(tab==='all'?'used':'all'); (tab==='all'?allTab:usedTab).focus(); }
-    });
-    tabs.append(allTab,usedTab,info('「所有書頁」能搜尋摘要和正文，點開即可閱讀。「本次取用」顯示書頁插件最後提交的歷史；酒館之後仍可能按預設剩餘空間裁剪。釘選會優先取用，但仍受上下文容量限制。'));
-    const search = el('input','folio-search'); search.type='search'; search.placeholder='找人物、約定或某段情節'; search.setAttribute('aria-label','搜尋記憶');
-    search.addEventListener('input',()=>{shown=60; renderList();});
-    const live = el('p','folio-catalogue-status'), list = el('div','folio-list'); list.setAttribute('role','tabpanel');
-    const footer = el('footer','folio-footer');
-    footer.append(model, info('向量模型已內建，在這個瀏覽器本機運行，不使用 Ollama。摘要與選頁是額外的短模型請求，沿用酒館現有連線，可能產生該連線的費用；未提供可用的小模型時會沿用目前模型。只在你開著酒館時自動整理。'));
-    dialog.append(top,tabs,search,live,list,footer); document.body.append(dialog);
-    dialog.addEventListener('click',e=>{ if(e.target===dialog && (e.offsetX<0 || e.offsetY<0 || e.offsetX>dialog.clientWidth || e.offsetY>dialog.clientHeight)) dialog.close(); });
-    let shown = 60;
-    function setTab(value) {
-        tab=value; shown=60; allTab.setAttribute('aria-selected',String(tab==='all')); usedTab.setAttribute('aria-selected',String(tab==='used'));
-        allTab.tabIndex=tab==='all'?0:-1; usedTab.tabIndex=tab==='used'?0:-1; renderList();
+export function mountUI(engine){
+    const menu=document.querySelector('#extensionsMenu');if(!menu)throw new Error('找不到輸入欄魔法棒選單');
+    let state=engine.snapshot(),tab='run',selected=null,editing=false,shown=60,modelOptionsKey='';
+    const entry=button('',()=>open(),'list-group-item flex-container flexGap5 interactable');entry.id='folio-wand';
+    const icon=el('i','fa-fw fa-solid fa-book-open extensionsMenuExtensionButton');icon.setAttribute('aria-hidden','true');
+    const badge=el('span','folio-menu-status');entry.append(icon,el('span','','書頁記憶'),badge);menu.append(entry);
+    const dialog=el('dialog','folio-dialog');dialog.setAttribute('aria-label','書頁記憶');
+    const top=el('header','folio-top'),brand=el('div');brand.append(el('h2','folio-title','書頁記憶'),el('p','folio-subtitle','查目錄，取正文。故事照常聊，記憶在背後整理。'));
+    const toggleLabel=el('label','folio-toggle'),toggle=el('input');toggle.type='checkbox';toggle.setAttribute('aria-label','自動記憶');
+    toggle.addEventListener('change',()=>engine.toggle(toggle.checked));toggleLabel.append(toggle,document.createTextNode('自動記憶'));
+    top.append(brand,toggleLabel,button('關閉',()=>dialog.close(),'folio-close'));
+    const status=el('p','folio-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+    const warning=el('p','folio-warning'),error=el('p','folio-warning');error.hidden=true;
+    const tabs=el('nav','folio-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','記憶功能');
+    const labels={run:'運行',pages:'書頁目錄',selection:'本次取用',helper:'記憶助手'},panels={},tabButtons={};
+    for(const [key,label]of Object.entries(labels)){
+        const b=button(label,()=>setTab(key));b.id='folio-tab-'+key;b.setAttribute('role','tab');b.setAttribute('aria-controls','folio-view-'+key);
+        b.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const keys=Object.keys(labels),i=keys.indexOf(key);const next=e.key==='Home'?0:e.key==='End'?keys.length-1:(i+(e.key==='ArrowRight'?1:keys.length-1))%keys.length;setTab(keys[next]);tabButtons[keys[next]].focus();});
+        tabs.append(b);tabButtons[key]=b;const panel=el('section','folio-view');panel.id='folio-view-'+key;panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',b.id);panels[key]=panel;
     }
-    function renderList() {
-        const expanded = new Set([...list.querySelectorAll('details[open]')].map(n=>n.dataset.key));
-        const scroll = list.scrollTop;
-        const q = search.value.trim().toLocaleLowerCase();
-        let entries = tab === 'used' ? (state.last?.items ?? []) : state.entries;
-        entries = entries.filter(e => [e.name,e.summary,e.body].some(s=>String(s??'').toLocaleLowerCase().includes(q)));
-        const fragment = document.createDocumentFragment();
-        if (!entries.length) fragment.append(el('p','folio-empty',q ? '沒有找到；試試人物名字或事件中的詞。' : tab==='used' ? '下一次發送後，這裡會列出取用的正文。' : '開啟一段聊天，正文就會自動出現在這裡。'));
-        for (const e of entries.slice(0,shown)) {
-            const row = el('details','folio-page'); row.dataset.key=String(e.index); row.open=expanded.has(row.dataset.key);
-            const summary=el('summary','folio-page-summary'), number=el('span','folio-page-number',e.index >= 0 ? String(e.index+1) : '—');
-            const copy=el('span','folio-page-copy');
-            copy.append(el('span','folio-page-heading',`${e.name || '正文'}${e.pinned?' · 已釘選':''}`));
-            copy.append(el('span','folio-page-excerpt',tab==='used' ? e.reason : e.summary || '尚在排隊整理；正文已保留'));
-            summary.append(number,copy); row.append(summary);
-            const body=el('div','folio-page-body');
-            if(tab==='all' && e.summary) { body.append(el('h4','','小摘要'),el('p','folio-summary-text',e.summary)); }
-            body.append(el('h4','','正文'),el('div','folio-original',e.body));
-            const actions=el('div','folio-page-actions');
-            if(e.index>=0) actions.append(button('回到聊天',()=>{
-                const message=document.querySelector(`#chat .mes[mesid="${e.index}"]`);
-                if(message){dialog.close();message.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});}
-                else live.textContent='這則尚未載入畫面；請在聊天中載入較早的訊息。';
-            }));
-            if(tab==='all') {
-                const run = task => async event => { event.currentTarget.disabled=true; try { await task(); } catch { live.textContent='這次操作沒有保存成功，請稍後再試。'; } finally { renderList(); } };
-                actions.append(button(e.pinned?'取消釘選':'釘選',run(()=>engine.pin(e.index))),button('重新整理這一則',run(()=>engine.refresh(e.index))));
-            }
-            body.append(actions);row.append(body);fragment.append(row);
+    const content=el('main','folio-content');content.append(...Object.values(panels));
+    dialog.append(top,status,warning,error,tabs,content);document.body.append(dialog);
+    const perform=task=>async event=>{
+        const b=event?.currentTarget;if(b)b.disabled=true;error.hidden=true;
+        try{await task();}catch(e){error.textContent=e.message||'操作未完成，請稍後重試';error.hidden=false;}
+        finally{if(b)b.disabled=false;}
+    };
+    const runBody=el('div');panels.run.append(runBody);
+    const pageTools=el('div','folio-toolbar'),search=el('input','folio-search'),filter=el('select');
+    search.type='search';search.placeholder='找標題、人物、摘要或正文';search.setAttribute('aria-label','搜尋書頁');
+    filter.setAttribute('aria-label','篩選書頁');for(const [value,label]of [['all','全部書頁'],['pending','尚待整理'],['pinned','已釘選']]){const o=el('option','',label);o.value=value;filter.append(o);}
+    search.addEventListener('input',()=>{shown=60;renderPages();});filter.addEventListener('change',()=>{shown=60;renderPages();});pageTools.append(search,filter);
+    const pageCount=el('p','folio-muted'),book=el('div','folio-book'),pageList=el('div','folio-page-list'),reader=el('article','folio-reader');
+    pageList.setAttribute('aria-label','書頁清單');book.append(pageList,reader);panels.pages.append(pageTools,pageCount,book);
+    const query=el('textarea','folio-query');query.rows=2;query.placeholder='例如：我還欠船長甚麼約定？留空則使用最後一次玩家輸入。';query.setAttribute('aria-label','試跑查頁內容');
+    const previewButton=button('試跑選頁（不生成正文）',perform(async()=>{await engine.preview(query.value);renderSelection();}),'folio-primary');
+    const previewBar=el('div','folio-toolbar');previewBar.append(previewButton,info('用這段文字做一次真實查頁，會使用記憶助手並產生短請求費用。不生成角色回覆、不保存為聊天。候選只來自完成的小摘要；所選頁取回的是完整正文。'));
+    const selectionBody=el('div');panels.selection.append(heading('這次查了哪些頁？'),query,previewBar,selectionBody);
+    const helperIntro=el('p','folio-prose','摘要和選頁使用額外的助手請求，不切換你的主聊天模型。預設自動找既有連線中的 Flash / Mini 等小模型；找不到才沿用目前聊天連線。');
+    const connection=el('select'),model=el('input'),modelList=el('datalist');connection.id='folio-connection';model.id='folio-model';modelList.id='folio-model-list';model.setAttribute('list',modelList.id);model.placeholder='自動使用連線提供的模型';model.autocomplete='off';
+    const connectionLabel=el('label','folio-field','助手連線');connectionLabel.htmlFor=connection.id;connectionLabel.append(connection);
+    const modelLabel=el('label','folio-field','助手模型（通常不用改）');modelLabel.htmlFor=model.id;modelLabel.append(model,modelList);
+    const configured=el('p','folio-muted'),connectionResult=el('div','folio-connection-result');
+    const saveHelper=()=>{engine.cancel();engine.host.configureHelper(connection.value,model.value);engine.connectionTest=null;engine.retry();modelOptionsKey='';renderHelper();};
+    connection.addEventListener('change',()=>{model.value='';saveHelper();});model.addEventListener('change',saveHelper);
+    const test=button('測試助手連線',perform(()=>engine.testHelper()),'folio-primary');
+    panels.helper.append(heading('誰負責寫目錄、選正文？','只選酒館已保存的連線，不要再輸入金鑰。自動模式不保證模型免費；費用依你原本的服務。這裡的選擇只影響書頁記憶。'),helperIntro,connectionLabel,modelLabel,configured,test,connectionResult,
+        heading('向量已內建'),el('p','folio-prose','BGE-small-zh-v1.5 隨插件安裝，在本機瀏覽器運行。沒有向量 API、不用 Ollama、不需要另開程式。關閉酒館後停止整理，重新開啟會續做未完成的頁。'));
+    function open(){state=engine.snapshot();update(state);if(!dialog.open)dialog.showModal();setTab(tab);tabButtons[tab].focus();}
+    function setTab(key){tab=key;for(const k of Object.keys(labels)){panels[k].hidden=k!==key;tabButtons[k].setAttribute('aria-selected',String(k===key));tabButtons[k].tabIndex=k===key?0:-1;}render();}
+    function renderRun(){
+        const intro=el('div','folio-run-intro');intro.append(heading(state.enabled?'你繼續故事，這裡自動接著整理':'記憶已暫停','一頁是一則角色正文，不是固定字數，也不是玩家與角色各算一樓。长正文會拆段寫摘要，再合成一頁。修改、換回覆或刪除後，只重做內容真正改變的頁。'),el('p','folio-prose',`這段聊天有 ${state.total} 頁正文，${state.ready} 頁已有摘要，${state.indexed} 頁已載入本機索引。`));
+        const progress=el('progress');progress.max=Math.max(1,state.total);progress.value=state.ready;progress.setAttribute('aria-label','摘要整理進度');intro.append(progress);
+        const flow=el('ol','folio-flow');
+        const steps=[['清理正文','去掉已知思考、狀態欄等內容；原聊天保留。',`${state.total} 頁`],['寫小摘要','每頁整理人物、事件、約定和伏筆。',`${state.ready}/${state.total}`],['建立本機向量','讓同義情節也能找到；不呼叫向量 API。',`${state.indexed}/${state.total}`],['讀目錄選頁','回覆前以向量與文字找候選，再讓助手看小摘要。',state.last?'已有取用紀錄':'下次回覆時執行'],['放回歷史','選中的完整正文與玩家背景，按時間放回預設歷史。',state.last?.final?'已觀測最終請求':'等待查頁']];
+        for(const [title,text,value]of steps){const li=el('li');li.append(el('strong','',title),el('span','folio-flow-value',value),el('p','',text));flow.append(li);}
+        const actions=el('div','folio-toolbar');actions.append(button('繼續整理',()=>engine.retry()),button('查看書頁',()=>setTab('pages')),button('查看取用',()=>setTab('selection')));
+        if(state.conflict)actions.append(button('改用書頁（停用 Anima 並刷新）',perform(()=>engine.host.useFolioInstead(state.conflict))));
+        const activity=el('ul','folio-activity');for(const item of state.activity.slice(0,12)){const li=el('li');li.append(el('time','',stamp(item.time)),el('span','',item.message));activity.append(li);}
+        runBody.replaceChildren(intro,flow,actions,heading('最近動作'),state.activity.length?activity:el('p','folio-muted','開啟聊天後，新的整理與查頁動作會自動出現在這裡。'));
+    }
+    function renderPages(){
+        const q=search.value.trim().toLocaleLowerCase();const entries=state.entries.filter(e=>(filter.value!=='pending'||!e.ready)&&(filter.value!=='pinned'||e.pinned)&&[e.title,e.name,e.summary,e.body,e.playerInput].some(s=>String(s??'').toLocaleLowerCase().includes(q)));
+        pageCount.textContent=`${entries.length} 頁符合條件。頁碼只計角色正文；「聊天第 N 則」包含玩家輸入。`;
+        if(!entries.some(e=>e.index===selected))selected=entries[0]?.index??null;
+        const scroll=pageList.scrollTop,fragment=document.createDocumentFragment();
+        for(const e of entries.slice(0,shown)){
+            const b=button('',()=>{selected=e.index;editing=false;renderPages();if(matchMedia('(max-width: 640px)').matches)reader.scrollIntoView({block:'start',behavior:'instant'});},'folio-page-link');
+            b.setAttribute('aria-current',String(e.index===selected));b.dataset.index=String(e.index);
+            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'等候整理；正文已保留'),el('span','folio-page-state',e.ready?e.indexed?'摘要與向量已就緒':'摘要完成，索引待載入':`摘要 ${e.parts}/${e.totalParts} 段`));fragment.append(b);
         }
-        if(entries.length>shown) fragment.append(button(`再看 ${Math.min(60,entries.length-shown)} 則`,()=>{shown+=60;renderList();}));
-        list.replaceChildren(fragment);list.scrollTop=scroll;
-        live.textContent=tab==='used' && state.last ? `插件帶入 ${state.last.items.length} 則，約 ${state.last.tokens.toLocaleString()} tokens${state.last.skipped?.length ? `；${state.last.skipped.length} 則因容量不足未帶入` : ''}。` : `${entries.length} 則書頁；${state.ready}/${state.total} 則已整理。`;
+        if(entries.length>shown)fragment.append(button('載入更多書頁',()=>{shown+=60;renderPages();}));
+        if(!entries.length)fragment.append(el('p','folio-empty','沒有符合的書頁。開啟一段聊天，或換個詞搜尋。'));
+        pageList.replaceChildren(fragment);pageList.scrollTop=scroll;
+        if(editing)return;
+        const e=entries.find(x=>x.index===selected);if(!e){reader.replaceChildren(el('p','folio-empty','選一頁，在這裡對照小摘要和正文。'));return;}
+        const openDetails=new Set([...reader.querySelectorAll('details[open]')].map(n=>n.firstElementChild?.textContent));
+        const nodes=[el('p','folio-page-meta',`第 ${e.number} 頁 · ${e.name} · 聊天第 ${e.index+1} 則`),el('h3','folio-reader-title',e.title)];
+        if(e.playerInput)nodes.push(disclosure('當時的玩家輸入',e.playerInput));
+        nodes.push(heading('小摘要','助手與向量檢索讀的是這段目錄。它用來選頁，不會取代選中的正文。'),el('p','folio-summary-text',e.summary||'尚未完成，整理好會自動更新。'),heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body),disclosure('對照原始訊息',e.raw));
+        const actions=el('div','folio-toolbar');
+        actions.append(button(e.pinned?'取消釘選':'釘選這頁',perform(()=>engine.pin(e.index))),button('重新整理此頁',perform(()=>engine.refresh(e.index))),button('修改小摘要',()=>{
+            editing=true;const input=el('textarea','folio-summary-edit');input.rows=6;input.value=e.summary;input.setAttribute('aria-label','修改小摘要');const bar=el('div','folio-toolbar');
+            bar.append(button('保存摘要',perform(async()=>{await engine.editSummary(e.index,input.value);editing=false;renderPages();}),'folio-primary'),button('取消',()=>{editing=false;renderPages();}));reader.append(input,bar);input.focus();
+        }),button('回到聊天',()=>{const m=document.querySelector(`#chat .mes[mesid="${e.index}"]`);if(m){dialog.close();m.scrollIntoView({block:'center',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});}else{error.textContent='這則訊息尚未載入聊天畫面，請先載入更早的訊息。';error.hidden=false;}}));
+        nodes.push(actions);reader.replaceChildren(...nodes);for(const d of reader.querySelectorAll('details'))d.open=openDetails.has(d.firstElementChild?.textContent);
     }
-    function update(next) {
-        state=next;toggle.checked=next.enabled;status.textContent=next.status;
-        progress.textContent=next.total ? `${next.ready} / ${next.total} 則已整理${next.last ? `　上次帶入 ${next.last.items.length} 則正文` : ''}` : '從下一則故事開始記住。';
-        warning.textContent=next.warning;warning.hidden=!next.warning;
-        takeover.hidden=!next.conflict;
-        model.textContent=next.model ? `摘要 / 選頁：${next.model}　向量：內建、本機運行` : '向量：內建、本機運行　摘要：自動沿用酒館連線';
-        if(dialog.open)renderList();
+    function renderSelection(){
+        const last=state.last;previewButton.disabled=state.busy||!state.enabled;const nodes=[];
+        if(!last){selectionBody.replaceChildren(el('p','folio-empty','還沒有查頁紀錄。下一次正常回覆時會自動查頁，也可以先在上方試跑。'));return;}
+        nodes.push(el('p','folio-muted',`${stamp(last.createdAt)} ${last.preview?'試跑結果，沒有發送主回覆':'正常回覆查頁'} · ${last.model||'尚未呼叫助手'}`),disclosure('本次查頁內容',last.query),el('p','folio-prose',`歷史約 ${last.beforeTokens.toLocaleString()} → ${last.tokens.toLocaleString()} tokens；書頁目標 ${last.budget.toLocaleString()}。必須保留的最近完整回合可能超過目標，酒館仍按預設可用空間裁剪。`));
+        nodes.push(heading('候選目錄與助手決定','語意分數是向量相似度，不是可信度；文字分數幫助匹配姓名與專有詞。助手只讀這些小摘要，不會提前讀完整舊正文。'));
+        if(!last.candidates.length)nodes.push(el('p','folio-muted',last.mode==='building'?'舊頁摘要尚未齊全，這次保留原歷史。':'近期正文已足夠，或沒有匹配的舊目錄。'));
+        for(const c of last.candidates){
+            const skipped=last.skipped.some(s=>s.index===c.index),d=disclosure(`第 ${c.number} 頁 · ${c.title} · ${skipped?'選中但放不下':c.selected?'選中':'未選中'}`,c.summary,'folio-candidate');
+            d.append(el('p','folio-muted',`語意 ${c.semantic.toFixed(3)} / 文字 ${c.lexical.toFixed(2)}　${skipped?'完整正文超出剩餘容量':c.reason}`));nodes.push(d);
+        }
+        nodes.push(heading('實際帶入的歷史','此清單按時間排列。確認標記是在酒館組裝好請求、交给後端前比對全文，不表示服務商已收到或模型已讀懂。若其他插件改寫、角色轉換或預設裁剪，可能找不到相同全文。'));
+        nodes.push(el('p',last.final?'folio-observed':'folio-muted',last.final?`已觀測酒館最終請求：${last.final.kept} 則找到完整內容，${last.final.dropped} 則未找到完整內容（可能裁剪或改寫）。`:last.preview?'試跑沒有主模型請求；以下是預計交給酒館的歷史。':'已交給酒館；尚未觀測最終請求。'));
+        for(const item of last.items){
+            const badge=item.final===true?'已核對':item.final===false?'未找到全文':'待核對';
+            nodes.push(disclosure(`${item.role==='user'?'玩家背景':`第 ${item.number??'?'} 頁正文`} · ${item.reason} · ${badge}`,item.body,'folio-history-item'));
+        }
+        const expanded=new Set([...selectionBody.querySelectorAll('details[open]')].map(d=>d.firstElementChild.textContent));selectionBody.replaceChildren(...nodes);for(const d of selectionBody.querySelectorAll('details'))d.open=expanded.has(d.firstElementChild.textContent);
     }
-    setTab('all');update(state);
-    return {update,dispose(){root.remove();dialog.remove();}};
+    function renderHelper(){
+        const options=[{id:'auto',name:'自動選擇小模型連線'},{id:'current',name:'使用目前聊天連線'},...state.profiles];
+        if(!options.some(p=>p.id===state.helperConnection))options.push({id:state.helperConnection,name:'原連線已不存在，請重新選擇'});
+        const key=JSON.stringify(options);if(connection.dataset.options!==key){connection.replaceChildren(...options.map(p=>{const o=el('option','',p.name);o.value=p.id;return o;}));connection.dataset.options=key;}
+        connection.value=state.helperConnection;if(document.activeElement!==model)model.value=state.helperModel;
+        configured.textContent=`目前解析為：${state.helper.label||'目前聊天連線'}；模型：${state.helper.model||state.model||'依連線自動選擇'}。變更即保存，不改主聊天模型。`;
+        if(modelOptionsKey!==state.helperConnection){modelOptionsKey=state.helperConnection;engine.host.modelChoices?.().then(list=>{modelList.replaceChildren(...list.map(id=>{const o=el('option');o.value=id;return o;}));}).catch(()=>{});}
+        test.disabled=state.busy;const result=state.connectionTest;
+        connectionResult.replaceChildren();if(result)connectionResult.append(el('p',result.ok?'folio-observed':'folio-muted',result.pending?'正在送出短測試請求…':result.ok?`${result.model} 已回應，用時 ${(result.ms/1000).toFixed(1)} 秒。`:`測試未通過：${result.error}`));
+        if(result?.ok)connectionResult.append(el('p','folio-summary-text',result.summary));
+    }
+    function render(){if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}
+    function update(next){
+        state=next;toggle.checked=next.enabled;status.textContent=next.status;warning.textContent=next.warning;warning.hidden=!next.warning;
+        badge.textContent=next.conflict?'衝突暫停':!next.enabled?'暫停':`${next.ready}/${next.total}`;
+        entry.title=next.status;if(dialog.open)render();
+    }
+    setTab('run');update(state);
+    return {update,open,dispose(){entry.remove();dialog.remove();}};
 }

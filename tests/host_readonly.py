@@ -63,20 +63,20 @@ with sync_playwright() as p:
         errors=[]
         page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto(ORIGIN,wait_until='domcontentloaded',timeout=60000)
-        page.wait_for_selector('#folio-panel',state='attached',timeout=60000)
+        page.wait_for_selector('#folio-wand',state='attached',timeout=60000)
         result=page.evaluate("""async(prefix)=>{
           const real=SillyTavern.getContext();
           const {Host}=await import(prefix+'src/host.js');
           const {Engine}=await import(prefix+'src/engine.js');
           const {Cache}=await import(prefix+'src/store.js');
           const {Embedder}=await import(prefix+'src/embedding.js');
-          const {KEY,newRecord}=await import(prefix+'src/core.js');
+          const {KEY,newRecord,bookPages}=await import(prefix+'src/core.js');
           const {runGenerationInterceptors}=await import('/scripts/extensions.js');
-          const chat=Array.from({length:12},(_,i)=>({mes:(i===1?'船長交付藍色信件，約定冬天以前送到山城。':'今日在旅店吃飯。')+'一般情節。'.repeat(50),name:i%2?'船長':'玩家',is_user:i%2===0,send_date:'synthetic-host-'+i,extra:{}}));
+          const chat=Array.from({length:13},(_,i)=>({mes:(i===1?'船長交付藍色信件，約定冬天以前送到山城。':'今日在旅店吃飯。')+'一般情節。'.repeat(50),name:i%2?'船長':'玩家',is_user:i%2===0,send_date:'synthetic-host-'+i,extra:{}}));
           chat.at(-1).mes='我還欠船長什麼約定？';chat.at(-1).is_user=true;
           let saves=0;
           const fixture={...real,chat,chatId:'folio-synthetic-only',mainApi:'openai',
-            extensionSettings:{folio:{enabled:true,account:'synthetic-readonly-host'}},
+            extensionSettings:{folio:{enabled:true,account:'synthetic-readonly-host',helperConnection:'current'}},
             chatCompletionSettings:{...structuredClone(real.chatCompletionSettings),chat_completion_source:'custom',custom_model:'folio-fixture-mini',custom_url:'https://folio-fixture.invalid/v1',reverse_proxy:'',proxy_password:'',custom_include_headers:'',custom_include_body:'',custom_exclude_body:''},
             saveChat:async()=>{saves++;},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>Math.ceil(text.length*1.5)};
           const host=new Host(()=>fixture), cache=new Cache('folio-host-fixture'),embedder=new Embedder(cache);
@@ -85,14 +85,14 @@ with sync_playwright() as p:
           try {
             const before=JSON.stringify(real.chatCompletionSettings);
             await engine.tick();
-            if(!chat[0].extra[KEY]?.done)throw Error('Actual ST request adapter did not save synthetic summary: '+engine.warning);
-            for(const m of chat){const r=newRecord(m);r.summary=m.mes;r.done=true;m.extra[KEY]=r;}
+            if(!chat[1].extra[KEY]?.done)throw Error('Actual ST request adapter did not save synthetic summary: '+engine.warning);
+            for(const p of bookPages(chat)){const r=newRecord(p.message,p.playerInput);r.summary=p.body;r.done=true;p.message.extra[KEY]=r;}
             const actualVectors=await embedder.embed(['船長的信件與約定']);
-            for(const m of chat)engine.vectors.set(engine.vectorKey(m.extra[KEY]),actualVectors);
+            for(const p of bookPages(chat))engine.vectors.set(engine.vectorKey(p.record),actualVectors);
             const source=JSON.stringify(chat), core=structuredClone(chat);
             window.folioIntercept=(...args)=>engine.intercept(...args);
-            const aborted=await runGenerationInterceptors(core,2400,'normal');
-            return {panel:!!document.querySelector('#folio-panel'),globalInterceptor:typeof previous==='function',
+            const aborted=await runGenerationInterceptors(core,4000,'normal');
+            return {panel:!!document.querySelector('#folio-wand'),globalInterceptor:typeof previous==='function',
               summarySaved:saves===1,originalUntouched:JSON.stringify(chat)===source,
               settingsUntouched:before===JSON.stringify(real.chatCompletionSettings),aborted,
               historyReduced:core.length<chat.length,selectedOriginal:core.some(m=>m.mes===chat[1].mes),

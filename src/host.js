@@ -28,7 +28,30 @@ export class Host {
         if (!c.extensionSettings.folio) {
             c.extensionSettings.folio = { enabled:true, account:uid() }; c.saveSettingsDebounced();
         }
+        const s=c.extensionSettings.folio;
+        s.account ||= uid(); s.helperConnection ??= 'auto'; s.helperModel ??= '';
         return c.extensionSettings.folio;
+    }
+    profiles() {
+        try { return this.context().ConnectionManagerRequestService?.getSupportedProfiles() ?? []; }
+        catch { return []; }
+    }
+    helper() {
+        const settings=this.settings(),profiles=this.profiles();
+        let profile=settings.helperConnection==='auto'
+            ? profiles.find(p=>/flash|mini|haiku|small|nano|[1378]b\b/i.test(`${p.name} ${p.model}`))
+            : profiles.find(p=>p.id===settings.helperConnection);
+        if(settings.helperConnection==='current')profile=null;
+        return {profile, model:settings.helperModel || profile?.model || '', label:profile?.name || '目前聊天連線', automatic:settings.helperConnection==='auto'};
+    }
+    configureHelper(connection, model = '') {
+        this.settings().helperConnection=connection;this.settings().helperModel=model.trim();
+        this.rejected.clear();this.context().saveSettingsDebounced();
+    }
+    async modelChoices() {
+        const api=await this.api();const helper=this.helper();
+        if(helper.profile)return [...new Set([helper.profile.model,helper.model].filter(Boolean))];
+        return [...new Set([api.getChatCompletionModel(this.context().chatCompletionSettings),...(api.model_list??[]).map(x=>x.id)].filter(Boolean))];
     }
     identity() {
         const c = this.context();
@@ -51,20 +74,36 @@ export class Host {
     async complete(system, prompt, {signal, selection = false} = {}) {
         const c = this.context();
         if (c.mainApi !== 'openai') throw new Error('目前先支援酒館的「聊天補全」連線；原本聊天不受影響');
+        const helper=this.helper();
+        if(helper.profile){
+            const controller=new AbortController();const abort=()=>controller.abort(signal?.reason??new DOMException('Cancelled','AbortError'));
+            signal?.throwIfAborted();signal?.addEventListener('abort',abort,{once:true});
+            const timer=setTimeout(()=>controller.abort(new Error('記憶助手連線超時，稍後可重試')),selection?30000:60000);
+            this.model=helper.model;
+            try{
+                const data=await c.ConnectionManagerRequestService.sendRequest(helper.profile.id,[{role:'system',content:system},{role:'user',content:prompt}],selection?1200:850,
+                    {stream:false,signal:controller.signal,extractData:true,includePreset:false,includeInstruct:false},
+                    {model:helper.model,temperature:.2,stream:false,type:'quiet'});
+                const text=typeof data==='string'?data:data?.content;
+                if(typeof text!=='string'||!text.trim())throw new Error('記憶助手沒有回傳正文');
+                return text;
+            }catch(e){if(controller.signal.aborted)throw controller.signal.reason;throw new Error('記憶助手請求失敗，請在「記憶助手」頁測試連線');}
+            finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
+        }
         const api = await this.api();
         if (!api.createGenerationParameters || !api.getChatCompletionModel) throw new Error('這個酒館版本缺少記憶需要的連線介面');
         const original = structuredClone(c.chatCompletionSettings);
         const current = api.getChatCompletionModel(original);
         if (!current) throw new Error('等待酒館目前的模型連線');
-        const preferred = chooseModel(current, api.model_list ?? [], this.rejected);
+        const preferred = this.settings().helperModel || chooseModel(current, api.model_list ?? [], this.rejected);
         const controller = new AbortController();
         const abort = () => controller.abort(signal?.reason ?? new DOMException('Cancelled', 'AbortError'));
         signal?.throwIfAborted(); signal?.addEventListener('abort', abort, {once:true});
-        const timer = setTimeout(() => controller.abort(new Error('摘要連線超時，稍後自動重試')), selection ? 16000 : 45000);
+        const timer = setTimeout(() => controller.abort(new Error('摘要連線超時，稍後自動重試')), selection ? 30000 : 60000);
         try {
             for (const model of [...new Set([preferred, current])]) {
                 controller.signal.throwIfAborted(); this.model = model;
-                const settings = { ...original, stream_openai:false, openai_max_tokens:selection ? 300 : 600,
+                const settings = { ...original, stream_openai:false, openai_max_tokens:selection ? 1200 : 850,
                     temp_openai:.2, freq_pen_openai:0, pres_pen_openai:0, n:1, bias_preset_selected:'',
                     show_thoughts:false, enable_web_search:false, request_images:false, seed:-1 };
                 const { generate_data:body } = await api.createGenerationParameters(settings, model, 'quiet', [

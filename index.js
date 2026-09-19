@@ -28,6 +28,7 @@ for (const name of ['MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED','USER_MESSAG
 on(events.GENERATION_STARTED,()=>engine.generationStarted());
 on(events.GENERATION_ENDED,()=>engine.generationEnded());
 on(events.GENERATION_STOPPED,()=>engine.generationEnded());
+on(events.CHAT_COMPLETION_SETTINGS_READY,body=>engine.captureFinal(body));
 for (const name of ['MAIN_API_CHANGED','CHATCOMPLETION_SOURCE_CHANGED','CHATCOMPLETION_MODEL_CHANGED','CONNECTION_PROFILE_LOADED']) on(events[name],()=>{
     host.rejected.clear(); engine.changed();
 });

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Engine} from '../src/engine.js';
-import {KEY,newRecord,sourceOf,validRecord} from '../src/core.js';
+import {KEY,newRecord,sourceOf,validRecord,bookPages} from '../src/core.js';
+import {sha256} from '../src/hash.js';
 
 class MemoryCache {
     constructor(){this.data=new Map();this.owner=null;}
@@ -11,6 +12,7 @@ class MemoryCache {
     close(){}
 }
 function message(text,i=0,user=false){return {mes:text,name:user?'玩家':'角色',is_user:user,send_date:`t${i}`,extra:{}};}
+function ready(r){for(const p of bookPages(r.c.chat)){const x=newRecord(p.message,p.playerInput);x.summary=p.body;x.done=true;p.message.extra[KEY]=x;r.engine.vectors.set(r.engine.vectorKey(x),[[1,0]]);}}
 function rig(messages=[message('港口的兩人交換信物，約定明日再見。')]) {
     const c={chat:messages,chatId:'a',mainApi:'openai',saveSettingsDebounced(){}};
     const settings={enabled:true};let calls=0,saves=0;
@@ -72,7 +74,7 @@ test('vectors survive new-message events, while chat changes isolate them',()=>{
 test('selection injects original bodies chronologically into coreChat only',async()=>{
     const source=Array.from({length:12},(_,i)=>message(`第${i}頁：`+(i===1?'港口船長信物':'日常飯食')+'情節。'.repeat(30),i,i%2===0));
     source.at(-1).mes='我想起了港口船長的信物。';source.at(-1).is_user=true;
-    const r=rig(source);for(const m of source){const x=newRecord(m);x.summary=m.mes;x.done=true;m.extra[KEY]=x;r.engine.vectors.set(r.engine.vectorKey(x),[[1,0]]);}
+    const r=rig(source);ready(r);
     r.host.complete=async()=>'{"ids":["p1","fake"]}';const before=JSON.stringify(source);const core=structuredClone(source);
     await r.engine.intercept(core,2000,()=>assert.fail('unexpected abort'),'normal');
     assert.equal(JSON.stringify(source),before);assert.ok(core.some(m=>m.mes===source[1].mes));assert.ok(core.length<source.length);
@@ -81,11 +83,11 @@ test('selection injects original bodies chronologically into coreChat only',asyn
 });
 test('valid empty selection keeps recent conversation only, no forced hallucinated memories',async()=>{
     const r=rig(Array.from({length:10},(_,i)=>message('前文的情節。'.repeat(50),i,i%2===0)));r.c.chat.at(-1).mes='繼續';r.c.chat.at(-1).is_user=true;
-    r.host.complete=async()=>'{"ids":[]}';const core=structuredClone(r.c.chat);await r.engine.intercept(core,1000,()=>{},'normal');assert.ok(core.length<10);assert.ok(r.engine.last.items.every(x=>x.reason==='近期正文'));
+    ready(r);r.host.complete=async()=>'{"ids":[]}';const core=structuredClone(r.c.chat);await r.engine.intercept(core,1000,()=>{},'normal');assert.ok(core.length<10);assert.ok(r.engine.last.items.every(x=>x.recent));
 });
 test('selector/embedding failures fall back and keep latest user',async()=>{
     const r=rig(Array.from({length:8},(_,i)=>message('舊約定。'.repeat(80),i,i%2===0)));r.c.chat.at(-1).mes='提及舊約定';r.c.chat.at(-1).is_user=true;
-    r.host.complete=async()=>{throw Error('timeout');};r.embedder.embed=async()=>{throw Error('wasm');};
+    ready(r);r.host.complete=async()=>{throw Error('timeout');};r.embedder.embed=async()=>{throw Error('wasm');};
     const core=structuredClone(r.c.chat);await r.engine.intercept(core,2000,()=>assert.fail('abort'),'normal');
     assert.equal(core.at(-1).mes,'提及舊約定');assert.equal(r.engine.last.mode,'fallback');assert.match(r.engine.warning,/暫不可用/);
 });
@@ -106,4 +108,41 @@ test('active Anima conflict prevents automatic summaries and history mutation',a
 test('text completion is untouched and does not issue a selector request',async()=>{
     const r=rig();r.c.mainApi='textgenerationwebui';const before=JSON.stringify(r.c.chat);
     await r.engine.intercept(r.c.chat,500,()=>{},'normal');assert.equal(r.stats().calls,0);assert.equal(JSON.stringify(r.c.chat),before);
+});
+
+test('one assistant body is one page; player input is context, never an independent summary',async()=>{
+    const r=rig([message('我要把信送走',0,true),message('<正文>船長交出了藍色信件。</正文><状态栏>饥饿</状态栏>',1),message('下一步去哪',2,true)]);
+    let request;r.host.complete=async(s,p)=>{request=JSON.parse(p);return '{"title":"船長的信","summary":"船長交出藍色信件。"}';};
+    await r.engine.tick();await r.engine.tick();assert.equal(r.engine.snapshot().total,1);assert.equal(request.playerInput,'我要把信送走');assert.equal(request.text,'船長交出了藍色信件。');assert.equal(r.c.chat[0].extra[KEY],undefined);assert.equal(r.engine.snapshot().ready,1);
+    r.c.chat[0].mes='我要拒絕收信';assert.equal(r.engine.snapshot().ready,0,'changed player context invalidates only its page');
+});
+test('old completed v1 assistant summaries migrate without paid regeneration',async()=>{
+    const r=rig([message('玩家背景',0,true),message('船長交付信件。',1)]),m=r.c.chat[1];
+    const source=sha256(JSON.stringify([1,false,m.name,m.mes]));m.extra[KEY]={v:1,hash:source,source,parts:['已有摘要'],summary:'已有摘要',done:true,pinned:true};
+    await r.engine.tick();assert.equal(r.stats().calls,0);assert.equal(bookPages(r.c.chat)[0].record.summary,'已有摘要');assert.equal(bookPages(r.c.chat)[0].record.v,2);
+});
+test('incomplete catalogue does not pass raw excerpts to selector or discard history',async()=>{
+    const r=rig(Array.from({length:9},(_,i)=>message('正文。'.repeat(100),i,i%2===0))),core=structuredClone(r.c.chat),before=JSON.stringify(core);
+    await r.engine.intercept(core,500,()=>{},'normal');assert.equal(r.stats().calls,0);assert.equal(JSON.stringify(core),before);assert.equal(r.engine.last.mode,'building');
+});
+test('selected older page carries its player context exactly once and never its summary',async()=>{
+    const r=rig(Array.from({length:9},(_,i)=>message('港口信件'+i+'。'.repeat(35),i,i%2===0)));ready(r);
+    for(const p of bookPages(r.c.chat))p.record.summary='這是目錄，不應放进歷史';
+    r.host.complete=async()=>'{"ids":["p1","p1"],"reasons":{"p1":"舊約定"}}';const core=structuredClone(r.c.chat);
+    for(const p of bookPages(r.c.chat))r.engine.vectors.set(r.engine.vectorKey(p.record),[[1,0]]);
+    await r.engine.intercept(core,650,()=>{},'normal');
+    assert.equal(core.filter(m=>m.send_date==='t1').length,1);assert.equal(core.filter(m=>m.send_date==='t0').length,1);assert.ok(!JSON.stringify(core.map(m=>m.mes)).includes('這是目錄'));
+    assert.ok(r.engine.last.candidates.find(c=>c.id==='p1').selected);
+});
+test('final request audit distinguishes removal and repeated text without double matching',async()=>{
+    const r=rig([message('same',0),message('same',1),message('question',2,true)]),core=structuredClone(r.c.chat);
+    r.engine.changed();
+    await r.engine.intercept(core,10000,()=>{},'normal');r.engine.captureFinal({type:'quiet',messages:[]});assert.equal(r.engine.last.stage,'awaiting-final');
+    r.engine.captureFinal({type:'normal',messages:[{role:'assistant',content:'same'},{role:'user',content:'question'}]});
+    assert.deepEqual(r.engine.last.items.map(x=>x.final),[true,false,true]);assert.equal(r.engine.last.final.dropped,1);
+    const trace=r.engine.last;r.engine.changed();assert.equal(r.engine.last,trace,'new same-chat events preserve audit');
+});
+test('preview is side-effect free for chat and does not claim a final main request',async()=>{
+    const r=rig();const before=JSON.stringify(r.c.chat);await r.engine.preview('試跑');
+    assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.last.preview,true);assert.equal(r.engine.awaitingFinal,false);assert.equal(r.stats().saves,0);
 });

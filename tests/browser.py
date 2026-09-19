@@ -66,18 +66,19 @@ with sync_playwright() as p:
         assert inference['dim']==512 and abs(inference['norm']-1)<0.001,inference
         assert inference['related']>inference['unrelated'],inference
         print(json.dumps({'real_inference':inference}),flush=True)
-        page.wait_for_function('testContext.chat.every(m=>m.extra.folio_memory?.done)',timeout=120000)
-        assert len([c for c in calls if 'text' in json.loads(c['messages'][-1]['content'])])==7,len(calls)
+        page.wait_for_function('testContext.chat.filter(m=>!m.is_user).every(m=>m.extra.folio_memory?.done)',timeout=120000)
+        assert len([c for c in calls if 'text' in json.loads(c['messages'][-1]['content'])])==3,len(calls)
         assert page.evaluate('testContext.chatCompletionSettings.custom_model')=='fixture-large'
         assert not page.evaluate('JSON.stringify(testContext.chat.map(m=>m.extra.folio_memory)).includes("不應被保存的推理")')
-        page.locator('.folio-open').click()
-        page.locator('.folio-page').nth(1).locator('summary').click()
+        page.locator('#folio-wand').click()
+        page.get_by_role('tab',name='書頁目錄').click()
+        page.locator('.folio-page-link').first.click()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'desktop.png'))
         page.set_viewport_size({'width':390,'height':844})
         page.locator('.folio-dialog').screenshot(path=str(OUT/'mobile.png'))
         assert page.locator('.folio-dialog').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
         page.get_by_role('searchbox').fill('藍色')
-        assert page.locator('.folio-page').count()==1
+        assert page.locator('.folio-page-link').count()==1
         page.get_by_role('searchbox').fill('')
         page.get_by_role('button',name='關閉',exact=True).click()
         before=len(calls)
@@ -94,6 +95,10 @@ with sync_playwright() as p:
         assert selected['latest']=='我還欠船長什麼約定？',selected
         assert selected['count']<7,selected
         # Pause cancels background work; no orphan worker/server at shutdown.
+        page.locator('#folio-wand').click()
+        page.get_by_role('tab',name='記憶助手').click()
+        page.get_by_role('button',name='測試助手連線').click()
+        page.wait_for_function("document.querySelector('.folio-connection-result').textContent.includes('已回應')")
         page.get_by_role('checkbox',name='自動記憶').uncheck()
         page.evaluate("testContext.chat.push({mes:'新故事。',name:'角色',is_user:false,send_date:'later',extra:{}});events.emit('MESSAGE_RECEIVED');")
         before=len(calls);page.wait_for_timeout(2300);assert len(calls)==before
@@ -101,6 +106,7 @@ with sync_playwright() as p:
         conflict_page=context.new_page()
         conflict_page.add_init_script("window.folioFixtureConflicts=['third-party/Anima-Memory-System'];")
         conflict_page.goto('http://folio.test/tests/fixture.html')
+        conflict_page.locator('#folio-wand').click()
         conflict_page.get_by_role('button',name='改用書頁（停用 Anima 並刷新）').wait_for(state='visible')
         before=len(calls);conflict_page.wait_for_timeout(2500);assert len(calls)==before
         conflict_page.get_by_role('button',name='改用書頁（停用 Anima 並刷新）').click()
@@ -108,7 +114,7 @@ with sync_playwright() as p:
         conflict_page.close()
         assert not external,external
         assert not errors,errors
-        result={'passed':True,'model':inference,'summaries':7,'total_api_requests':len(calls),'selected_count':selected['count'],'conflict_takeover':True,'external_requests':len(external),'browser_errors':errors}
+        result={'passed':True,'model':inference,'summaries':3,'total_api_requests':len(calls),'selected_count':selected['count'],'conflict_takeover':True,'external_requests':len(external),'browser_errors':errors}
         print(json.dumps(result,ensure_ascii=False),flush=True)
     finally:
         browser.close()
