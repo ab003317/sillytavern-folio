@@ -317,19 +317,22 @@ test('delete all followed by new floor zero cannot inherit deleted data',async()
     r.c.chat.push(message('全新故事',0));await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(bookPages(r.c.chat)[0].record.hash,sourceOf(r.c.chat[0]).hash);
 });
 
-async function sent(r){
+let sentSequence=0;
+async function sent(r,label='生成回覆'){
     const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('aborted'),'normal');
     r.engine.captureFinal({type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+    const sequence=++sentSequence;r.c.chat.push(message(`${label}-${sequence}`,1000+sequence));r.engine.responseReceived();
     await r.engine.usageWrite;return structuredClone(r.engine.snapshot().usages[0]);
 }
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0));
 
-test('sent journal survives deleting newest response and reload without reusing the working trace',async()=>{
-    const r=rig([message('舊正文',0),message('繼續',1,true)]);r.engine.changed();const receipt=await sent(r);
-    r.c.chat.push(message('最新回覆',2));r.engine.changed();r.c.chat.pop();r.engine.changed({deleted:true});
-    assert.equal(r.engine.last,null);assert.equal(r.engine.snapshot().usages[0].id,receipt.id);
+test('deleting newest response rolls recent usage back to the older receipt whose response still exists',async()=>{
+    const r=rig([message('舊正文',0),message('繼續',1,true)]);r.engine.changed();const older=await sent(r,'舊回覆');
+    r.c.chat.push(message('新問題',2,true));r.engine.changed();const newest=await sent(r,'最新回覆');assert.notEqual(newest.id,older.id);
+    r.c.chat.pop();r.engine.changed({deleted:true});
+    assert.equal(r.engine.last,null);assert.equal(r.engine.snapshot().usages[0].id,older.id);assert.equal(r.engine.snapshot().usageStoredCount,2);
     const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();
-    assert.equal(reopened.snapshot().usages[0].id,receipt.id);assert.equal(reopened.snapshot().usages[0].sourceChanged,false);
+    assert.equal(reopened.snapshot().usages[0].id,older.id);assert.equal(reopened.snapshot().usages.length,1);
 });
 
 test('journal snapshots retain missing source bodies and original numbers but never retrieve them again',async()=>{
@@ -348,7 +351,7 @@ test('preview, quiet events and aborted stale requests do not enter sent journal
     const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');r.engine.captureFinal({type:'quiet',messages:[]});
     assert.equal(r.engine.snapshot().usages[0].id,first.id);
     r.c.chat.pop();r.engine.changed({deleted:true});const stale={type:'normal',messages:[{role:'assistant',content:'stale'}]};r.engine.captureFinal(stale);
-    assert.throws(()=>JSON.stringify(stale),/生成已取消/);assert.equal(r.engine.snapshot().usages.length,1);
+    assert.throws(()=>JSON.stringify(stale),/生成已取消/);assert.equal(r.engine.snapshot().usages.length,0);assert.equal(r.engine.snapshot().usageStoredCount,1);
 });
 
 test('actual sends are separate immutable receipts, deduplicated and capped at twenty per chat',async()=>{
@@ -368,12 +371,23 @@ test('journal isolates chat switches, restores each chat and ignores late loads 
     r.cache.get=get;r.c.chatId='a';r.engine.changed();await settle();assert.equal(r.engine.snapshot().usages[0].id,first.id);
 });
 
-test('legacy observed trace migrates even after source deletion, while unobserved trace never migrates',async()=>{
-    const r=rig();r.engine.changed();const receipt=await sent(r);await r.cache.put('records','usage:a',[]);r.c.chat.pop();
+test('legacy observed trace migrates even after a source deletion, while unobserved trace never migrates',async()=>{
+    const r=rig();r.engine.changed();const receipt=await sent(r);await r.cache.put('records','usage:a',[]);r.c.chat.splice(0,1);
     const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();await reopened.usageWrite;
     assert.equal(reopened.last,null);assert.equal(reopened.snapshot().usages[0].id,receipt.id);
     const pending={...receipt,id:'pending',stage:'awaiting-final',final:undefined};await r.cache.put('records','trace:b',pending);
     r.c.chatId='b';reopened.changed();await settle();assert.deepEqual(reopened.snapshot().usages,[]);
+});
+
+test('request-ready receipt stays hidden until a response is attached, and a swipe binds the replacement floor',async()=>{
+    const r=rig([message('問題',0,true)]);r.engine.changed();const core=structuredClone(r.c.chat);
+    await r.engine.intercept(core,10000,()=>{},'normal');r.engine.captureFinal({type:'normal',messages:[{role:'user',content:'問題'}]});
+    assert.equal(r.engine.snapshot().usages.length,0);assert.equal(r.engine.snapshot().usageStoredCount,1);
+    r.c.chat.push(message('第一個回覆',1));r.engine.responseReceived();await r.engine.usageWrite;assert.equal(r.engine.snapshot().usages.length,1);
+    r.c.chat.push(message('再生成',2,true));r.engine.changed();const swipeCore=structuredClone(r.c.chat);await r.engine.intercept(swipeCore,10000,()=>{},'normal');
+    r.engine.captureFinal({type:'normal',messages:swipeCore.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+    r.c.chat.at(-1).mes='替換成角色回覆';r.c.chat.at(-1).is_user=false;r.engine.responseReceived({replacement:true});await r.engine.usageWrite;
+    assert.equal(r.engine.snapshot().usages.length,2);assert.equal(r.engine.snapshot().usages[0].resultIndex,r.c.chat.length-1);
 });
 
 test('failed journal storage is visible without blocking send, then next write recovers both receipts',async()=>{

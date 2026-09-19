@@ -13,7 +13,7 @@ export class Engine {
         this.observedStamps=[];this.traceLoad=0;this.notice='';this.maintenance=Promise.resolve();this.generationGuard=null;
         this.status='等待開啟聊天'; this.warning='';
         this.resetting=false;this.idle=Promise.resolve();
-        this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';
+        this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.pendingUsage=null;
     }
     pages() { const identity=this.host.identity();return bookPages(this.host.context().chat ?? []).map(p=>({...p,identity})); }
     pendingRebuild(record){return !!record?.rebuild&&!record.rebuild.cancelled&&(!record.done||(!record.rebuild.indexed&&!record.rebuild.vectorFallback));}
@@ -47,6 +47,20 @@ export class Engine {
             if(identity===this.host.identity()&&identity===this.usageIdentity){this.usages=mergeUsage(this.usages,saved);this.usageError='';this.emit();}
         }).catch(()=>{if(identity===this.host.identity()){this.usageError='發送紀錄暫時只保留在此視窗：本機保存失敗，請檢查瀏覽器儲存空間';this.emit();}});
     }
+    responseReceived({replacement=false}={}) {
+        const pending=this.pendingUsage;if(!pending||pending.identity!==this.host.identity())return;
+        const chat=this.host.context().chat??[],stamps=chatStamps(chat);let index=pending.stamps.length;
+        if(!samePrefix(pending.stamps,stamps)){
+            const replaced=replacement&&stamps.length===pending.stamps.length&&index>0&&samePrefix(pending.stamps.slice(0,-1),stamps.slice(0,-1));
+            if(!replaced)return;index--;
+        }
+        while(index<chat.length&&(chat[index].is_user||chat[index].is_system))index++;
+        if(index>=chat.length)return;
+        const receipt=this.usages.find(x=>x.id===pending.id);if(!receipt)return;
+        const result={sourceStamp:stamps[index],index,boundAt:Date.now()};receipt.result=result;this.pendingUsage=null;
+        if(this.last?.id===receipt.id){this.last.result=result;this.rememberTrace(this.last);}else this.emit();
+        this.rememberUsage(receipt,pending.identity);
+    }
     invalidateTrace(){
         this.last=null;this.awaitingFinal=false;this.traceLoad++;this.notice='聊天內容已改變；待發送的選頁已失效，已發送紀錄保留。下次將從現有正文重新查頁。';
         const identity=this.host.identity();if(identity)this.cache.put('records','trace:'+identity,null).catch(()=>{});
@@ -65,18 +79,19 @@ export class Engine {
             rebuilding:this.pendingRebuild(p.record),rebuilt:!!p.record?.done&&!!p.record?.rebuild&&!p.record.rebuild.cancelled,previousSummary:!p.record?.done&&!!p.record?.rebuild?.previous?.summary,
             parts:p.record?.parts?.length??0,totalParts:splitBody(p.body).length,edited:!!p.record?.edited}));
         const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
+        const chat=this.host.context().chat??[],usageRecords=this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(chat),chat.map(m=>m.is_system?'system':m.is_user?'user':'assistant')).filter(x=>x.resultState==='present'):[];
         return {entries,total:entries.length,ready:entries.filter(p=>p.ready).length,indexed:entries.filter(p=>p.indexed).length,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
             resetting:this.resetting,rebuild:this.rebuildState(),generating:this.generating,chatIdentity:this.host.identity(),
-            usages:this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(this.host.context().chat??[])):[],usageError:this.usageError,
+            usages:usageRecords,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
     }
     emit() { this.notify(this.snapshot()); }
     log(message) { this.activity.unshift({time:Date.now(),message}); this.activity.length=Math.min(50,this.activity.length); }
     setStatus(text) { this.status=this.conflict?'Anima 仍啟用；書頁暫停，避免重複處理歷史':text; this.emit(); }
     schedule(ms=1800) { clearTimeout(this.timer); if(!this.disposed)this.timer=setTimeout(()=>{this.tick().catch(()=>{});},ms); }
-    cancel() { this.epoch++;this.controller?.abort();this.selectController?.abort();this.awaitingFinal=false; }
+    cancel() { this.epoch++;this.controller?.abort();this.selectController?.abort();this.awaitingFinal=false;this.pendingUsage=null; }
     changed({deleted=false}={}) {
         this.cancel();this.warning='';this.failures=0;
         const identity=this.host.identity(),stamps=chatStamps(this.host.context().chat??[]);
@@ -343,6 +358,7 @@ export class Engine {
             }
         }
         this.last.stage='observed';this.last.final={observedAt:Math.max(Date.now(),(this.usages[0]?.final?.observedAt??0)+1),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
+        this.pendingUsage={identity:this.host.identity(),id:this.last.id,stamps:[...this.last.stamps]};
         this.rememberUsage(this.last);
         this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；記錄可在「本次取用」查看');
     }

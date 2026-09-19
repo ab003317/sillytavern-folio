@@ -69,7 +69,7 @@ with sync_playwright() as p:
           t.mount=()=>{t.engine=new Engine(host,cache,embedder,s=>t.ui?.update(s));t.engine.schedule=()=>{};t.ui=mountUI(t.engine);t.engine.changed();for(const p of t.engine.pages())t.engine.vectors.set(t.engine.vectorKey(p.record),[[1,0]]);t.engine.emit();window.folioIntercept=(...args)=>t.engine.intercept(...args);};
           t.observe=body=>t.engine.captureFinal(body);real.eventSource.on(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,t.observe);t.mount();
           const {runGenerationInterceptors}=await import('/scripts/extensions.js');
-          t.send=async()=>{const core=structuredClone(chat);if(await runGenerationInterceptors(core,10000,'normal'))throw Error('Unexpected abort');const api=await host.api();const answer=await api.sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));if(typeof answer==='function'){for await(const part of answer()){};}await t.engine.usageWrite;return core;};
+          t.sequence=0;t.send=async()=>{const core=structuredClone(chat);if(await runGenerationInterceptors(core,10000,'normal'))throw Error('Unexpected abort');const api=await host.api();const answer=await api.sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));if(typeof answer==='function'){for await(const part of answer()){};}const n=++t.sequence;chat.push({mes:'合成驗收：角色回覆 '+n,is_user:false,name:'船長',send_date:'usage-result-'+n,extra:{}});t.engine.responseReceived();await t.engine.usageWrite;return core;};
           await t.send();t.first=t.engine.snapshot().usages[0].id;t.ui.open();
           return {receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
         }""",PREFIX)
@@ -78,8 +78,10 @@ with sync_playwright() as p:
         page.set_viewport_size({'width':390,'height':844});page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-dashboard-mobile.png'))
         assert page.locator('.folio-content').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
         page.evaluate("""async()=>{
-          const t=usageTest;t.fixture.chat.push({mes:'合成驗收：最新回覆',is_user:false,name:'船長',send_date:'latest',extra:{}});t.engine.changed();t.fixture.chat.pop();t.engine.changed({deleted:true});
-          if(t.engine.snapshot().usages[0].id!==t.first)throw Error('Deleted latest response erased receipt');
+          const t=usageTest;t.fixture.chat.push({mes:'合成驗收：第二次提問',is_user:true,name:'玩家',send_date:'second-user',extra:{}});t.engine.changed();await t.send();
+          if(t.engine.snapshot().usages[0].id===t.first)throw Error('New response did not become latest');
+          t.fixture.chat.pop();t.engine.changed({deleted:true});
+          if(t.engine.snapshot().usages[0].id!==t.first)throw Error('Deleting newest response did not roll back to older receipt');
           t.fixture.chat.splice(0,2);t.engine.changed({deleted:true});await t.engine.maintenance;await t.engine.usageWrite;t.engine.dispose();t.ui.dispose();t.mount();
         }""")
         page.wait_for_function('usageTest.engine.snapshot().usages.length===1')
@@ -95,7 +97,7 @@ with sync_playwright() as p:
         assert page.locator('.folio-source-missing').count()==2
         final=page.evaluate("""()=>{const t=usageTest;const intact=JSON.stringify(t.real.chat)===t.originalChat&&JSON.stringify(t.real.chatCompletionSettings)===t.originalSettings;t.real.eventSource.removeListener(t.real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,t.observe);window.folioIntercept=t.previous;t.engine.dispose();t.ui.dispose();return intact;}""")
         assert final
-        assert len(mock_sends)==2,mock_sends
+        assert len(mock_sends)==3,mock_sends
         assert not errors,errors
         print(json.dumps({'passed':True,'installedVersion':version,'nativeWand':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
     finally:

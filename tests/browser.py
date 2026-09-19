@@ -90,7 +90,11 @@ with sync_playwright() as p:
           const original=JSON.stringify(testContext.chat);const core=structuredClone(testContext.chat);let aborted=false;
           await folioIntercept(core,520,()=>{aborted=true;},'normal');
           await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
-          return {count:core.length,latest:core.at(-1).mes,unchanged:JSON.stringify(testContext.chat)===original,aborted,bodies:core.map(m=>m.mes)};
+          const unchanged=JSON.stringify(testContext.chat)===original;
+          const reply={mes:'合成角色回覆：我記得冬天前要把信送到山城。',name:'船長',is_user:false,send_date:'fixture-result',extra:{}};
+          const {newRecord}=await import('/folio/src/core.js');const record=newRecord(reply,'我還欠船長什麼約定？');record.summary=reply.mes;record.title='冬天前的約定';record.done=true;reply.extra.folio_memory=record;
+          testContext.chat.push(reply);await events.emit('MESSAGE_RECEIVED');await testContext.saveChat();
+          return {count:core.length,latest:core.at(-1).mes,unchanged,aborted,bodies:core.map(m=>m.mes)};
         }""")
         assert selected['unchanged'] and not selected['aborted'],selected
         assert selected['latest']=='我還欠船長什麼約定？',selected
@@ -119,7 +123,7 @@ with sync_playwright() as p:
         assert '當時發送快照' in page.locator('.folio-view:not([hidden])').inner_text()
         assert page.locator('.folio-usage-item').count()>0
         page.get_by_role('tab',name='書頁目錄',exact=True).click()
-        assert page.locator('.folio-page-link').count()==2
+        assert page.locator('.folio-page-link').count()==3
         page.get_by_role('button',name='關閉',exact=True).click()
         before=len(calls);page.reload();page.wait_for_function('window.fixtureReady===true');page.wait_for_timeout(2500)
         assert len(calls)==before,'deletion/reload must not regenerate unaffected pages'

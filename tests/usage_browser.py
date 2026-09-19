@@ -36,7 +36,7 @@ with sync_playwright() as p:
         page.locator('#folio-wand').click()
         assert page.get_by_role('progressbar',name='摘要目錄',exact=True).get_attribute('aria-valuenow')=='0'
         page.get_by_role('tab',name='本次取用',exact=True).click()
-        assert '尚無發送取用紀錄' in page.locator('#folio-view-selection').inner_text()
+        assert '尚無對應現存角色回覆的取用紀錄' in page.locator('#folio-view-selection').inner_text()
         assert page.locator('#folio-view-selection textarea').count()==0
         assert page.get_by_role('button',name='試跑選頁',exact=False).count()==0
         page.evaluate("""async()=>{
@@ -55,6 +55,8 @@ with sync_playwright() as p:
           const core=structuredClone(testContext.chat);await folioIntercept(core,10000,()=>{throw Error('aborted');},'normal');
           // Simulate host cropping one original body. Uncertain content must not be labelled used.
           await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:core.filter((m,i)=>i!==3).map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+          testContext.chat.push({mes:'第一個合成角色回覆',is_user:false,name:'船長',send_date:'first-result',extra:{}});
+          await events.emit('MESSAGE_RECEIVED');
           await events.emit('GENERATION_ENDED');
         }""")
         page.wait_for_function("document.querySelector('.folio-recent-count')?.textContent==='2 頁正文 · 4 則玩家背景'")
@@ -66,10 +68,21 @@ with sync_playwright() as p:
         page.get_by_role('button',name='查看發送紀錄',exact=True).click()
         assert page.locator('#folio-view-selection').get_by_text('已核對取用：2 頁正文、4 則玩家背景',exact=True).is_visible()
         assert not page.locator('.folio-uncertain').get_attribute('open')
-        # Append and delete the generated latest response: latest receipt remains the same.
+        # A second real request becomes latest only after its resulting assistant floor exists.
         old_text=page.locator('.folio-usage-bar select').inner_text()
-        page.evaluate("testContext.chat.push({mes:'合成最新回覆',is_user:false,name:'船長',send_date:'new',extra:{}});events.emit('MESSAGE_RECEIVED');testContext.chat.pop();events.emit('MESSAGE_DELETED');testContext.saveChat();")
+        page.evaluate("""async()=>{
+          testContext.chat.push({mes:'第二次合成提問',is_user:true,name:'玩家',send_date:'second-user',extra:{}});await events.emit('MESSAGE_SENT');
+          const core=structuredClone(testContext.chat);await folioIntercept(core,10000,()=>{throw Error('aborted');},'normal');
+          await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+          testContext.chat.push({mes:'第二個合成角色回覆',is_user:false,name:'船長',send_date:'second-result',extra:{}});await events.emit('MESSAGE_RECEIVED');
+        }""")
+        page.wait_for_function("document.querySelectorAll('.folio-usage-bar option').length===2")
+        assert '第二次合成提問' in page.locator('#folio-view-selection details').first.text_content()
+        # Deleting that response must roll back to the old receipt whose response still exists.
+        page.evaluate("testContext.chat.pop();events.emit('MESSAGE_DELETED');testContext.saveChat();")
+        page.wait_for_function("document.querySelectorAll('.folio-usage-bar option').length===1")
         assert page.locator('.folio-usage-bar select').inner_text()==old_text
+        assert '我還欠船長什麼約定？' in page.locator('#folio-view-selection details').first.text_content()
         # Delete a used source pair and confirm shifted surviving positions never relabel the source.
         page.evaluate("testContext.chat.splice(0,2);events.emit('MESSAGE_DELETED');testContext.saveChat();")
         page.wait_for_function("document.querySelector('.folio-source-missing')?.textContent==='來源已刪除或變更'")
@@ -86,7 +99,10 @@ with sync_playwright() as p:
         page.evaluate("""async()=>{window.nextCore=structuredClone(testContext.chat);await folioIntercept(nextCore,10000,()=>{throw Error('abort');},'normal');}""")
         assert page.locator('.folio-usage-bar select option').count()==1
         assert page.locator('.folio-source-missing').count()==2
-        page.evaluate("events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:nextCore.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});")
+        page.evaluate("""async()=>{
+          await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:nextCore.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+          testContext.chat.push({mes:'第三個合成角色回覆',is_user:false,name:'船長',send_date:'third-result',extra:{}});await events.emit('MESSAGE_RECEIVED');
+        }""")
         page.wait_for_function("document.querySelectorAll('.folio-usage-bar select option').length===2")
         assert page.locator('.folio-source-missing').count()==0
         page.get_by_label('發送紀錄',exact=True).select_option(index=1)

@@ -13,3 +13,10 @@ test('source mapping distinguishes moved, missing, identical collisions and lega
     assert.equal(view.sourceChanged,true);assert.deepEqual(view.items.map(x=>x.sourceState),['missing','present','ambiguous','unknown']);
     assert.deepEqual(view.items.map(x=>x.currentIndex),[null,0,null,null]);assert.equal(JSON.stringify(original),before);
 });
+test('only a uniquely present generated response is active; legacy receipts infer the following assistant floor',()=>{
+    const exact={...record('exact',3),stamps:['question'],result:{sourceStamp:'reply'},items:[]};
+    const deleted={...record('deleted',2),stamps:['question'],result:{sourceStamp:'gone'},items:[]};
+    const legacy={...record('legacy',1),stamps:['question'],items:[]};
+    const view=usageView([exact,deleted,legacy],['question','reply'],['user','assistant']);
+    assert.deepEqual(view.map(x=>x.resultState),['present','missing','present']);assert.deepEqual(view.map(x=>x.resultIndex),[1,null,1]);
+});

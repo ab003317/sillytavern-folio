@@ -68,7 +68,7 @@ export function mountUI(engine){
     const pageCount=el('p','folio-muted'),book=el('div','folio-book'),pageList=el('div','folio-page-list'),reader=el('article','folio-reader');
     pageList.setAttribute('aria-label','書頁清單');book.append(pageList,reader);panels.pages.append(pageTools,pageCount,book);
     const usagePicker=el('select');usagePicker.setAttribute('aria-label','發送紀錄');usagePicker.addEventListener('change',()=>{usageChoice=usagePicker.value;renderSelection();});
-    const usageBar=el('div','folio-toolbar folio-usage-bar');usageBar.append(usagePicker,info(`每段聊天在此瀏覽器保留最近 ${USAGE_LIMIT} 次發送取用快照，包含當時正文；刪除聊天訊息不會刪除這些快照。只供查看，不會把已刪除正文重新送入後續請求。清除瀏覽器網站資料會移除紀錄，不跨裝置同步。`));
+    const usageBar=el('div','folio-toolbar folio-usage-bar');usageBar.append(usagePicker,info(`每段聊天在此瀏覽器保存最近 ${USAGE_LIMIT} 次發送取用快照，但這裡只列出對應角色回覆仍存在的紀錄。刪除最新回覆會回退到上一筆現存回覆；快照仍在本機，回覆恢復時可重新識別。只供查看，不會把已刪除正文送入後續請求。清除瀏覽器網站資料會移除紀錄，不跨裝置同步。`));
     const selectionBody=el('div');panels.selection.append(heading('發送取用紀錄','在酒館組裝好請求、交給後端前核對全文；不是服務商接收或生成成功的回執。未發送的選頁不會取代最近紀錄。'),usageBar,selectionBody);
     const apiForms=mountApiForms(engine,panels.helper,{el,button,info,heading});
     dialog.addEventListener('close',()=>apiForms.conceal());
@@ -78,9 +78,9 @@ export function mountUI(engine){
         const intro=heading(state.rebuild?.pending?'正在重新整理書頁':state.enabled?'故事繼續，記憶在這裡接上':'自動記憶已暫停','一頁是一則角色正文，不是固定字數。長正文拆段總結後合成一頁；玩家輸入作為背景保留。手動重整不受自動開關影響。');
         const dashboard=el('div','folio-dashboard'),meters=el('div','folio-meters');
         meters.append(ring('摘要目錄',state.ready,state.total,'完成小摘要的正文頁數。提取模型讀目錄來選頁，選中後取回完整正文。'),ring('本機向量',state.indexed,state.total,'已載入向量索引的正文頁數。用內建模型在本機檢索；尚未就緒時可能暫用文字匹配。','folio-meter-vector'));
-        const latest=state.usages?.[0],receipt=el('section','folio-recent');receipt.append(heading('最近一次取用'),el('p','folio-recent-time',latest?dateStamp(latest.final.observedAt):'尚無發送紀錄'));
+        const latest=state.usages?.[0],receipt=el('section','folio-recent');receipt.append(heading('最近取用（現存回覆）','只看仍在目前聊天裡的角色回覆。刪除最新回覆後，這裡會自動回到上一筆仍存在的舊取用。'),el('p','folio-recent-time',latest?dateStamp(latest.final.observedAt):'尚無對應現存回覆的紀錄'));
         if(latest){const kept=latest.items.filter(x=>x.final===true);receipt.append(el('p','folio-recent-count',`${kept.filter(x=>x.role!=='user').length} 頁正文 · ${kept.filter(x=>x.role==='user').length} 則玩家背景`),el('p','folio-recent-query',latest.query||'這次沒有新的玩家輸入'),el('p','folio-muted',latest.sourceChanged?'聊天已有變更；仍保留當時快照。':'已在酒館送出前核對完整內容。'));}
-        else receipt.append(el('p','folio-muted','正常發送後，這裡會自動顯示取用了哪些正文。'));
+        else receipt.append(el('p','folio-muted','正常生成並保留角色回覆後，這裡會顯示它取用了哪些正文。'));
         receipt.append(button('查看發送紀錄',()=>{usageChoice='';setTab('selection');}));dashboard.append(meters,receipt);
         const actions=el('div','folio-toolbar');if(!state.enabled)actions.append(button('繼續自動整理',()=>{engine.toggle(true);engine.retry();}));actions.append(button('查看書頁',()=>setTab('pages')),button('記憶助手',()=>setTab('helper')));
         if(state.conflict)actions.append(button('改用書頁（停用 Anima 並刷新）',perform(()=>engine.host.useFolioInstead(state.conflict))));
@@ -122,9 +122,9 @@ export function mountUI(engine){
         usagePicker.replaceChildren(...records.map((r,i)=>{const o=el('option','',`${i===0?'最近一次':'較早紀錄'}：${dateStamp(r.final.observedAt)}`);o.value=i===0?'':r.id;return o;}));usagePicker.value=usageChoice;usageBar.hidden=!records.length;
         const last=records.find(x=>x.id===usageChoice)??records[0],nodes=[];
         if(state.usageError)nodes.push(el('p','folio-usage-warning',state.usageError));
-        if(!last){selectionBody.replaceChildren(...nodes,el('p','folio-empty','尚無發送取用紀錄。正常發送一則訊息後會自動記錄。'));return;}
+        if(!last){selectionBody.replaceChildren(...nodes,el('p','folio-empty','尚無對應現存角色回覆的取用紀錄。正常生成並保留一則回覆後會自動出現。'));return;}
         const kept=last.items.filter(x=>x.final===true),uncertain=last.items.filter(x=>x.final!==true);
-        nodes.push(el('p','folio-muted',`${dateStamp(last.final.observedAt)}　此瀏覽器已保存 ${records.length} / ${USAGE_LIMIT} 次`));
+        nodes.push(el('p','folio-muted',`${dateStamp(last.final.observedAt)}　現存回覆可查看 ${records.length} 次；本機共保存 ${state.usageStoredCount??records.length} / ${USAGE_LIMIT} 次`));
         if(last.sourceChanged)nodes.push(el('p','folio-usage-warning','聊天已有刪除或變更；以下保留當時發送快照，不代表下一次取用。'));
         nodes.push(disclosure('當時的玩家輸入',last.query||'沒有新的玩家輸入'),heading(`已核對取用：${kept.filter(x=>x.role!=='user').length} 頁正文、${kept.filter(x=>x.role==='user').length} 則玩家背景`),el('p','folio-muted','依當時的歷史順序排列。展開可看送入請求的完整正文。'));
         function itemView(item){

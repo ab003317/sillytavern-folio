@@ -11,16 +11,21 @@ export function mergeUsage(...groups) {
 }
 
 // Historical item positions stay historical. Never resolve old items by their floor index.
-export function usageView(records,stamps) {
+export function usageView(records,stamps,roles=[]) {
     const positions=new Map();
     for(const [i,stamp]of stamps.entries()){
         if(!positions.has(stamp))positions.set(stamp,[]);positions.get(stamp).push(i);
     }
-    return records.map(record=>({...record,
+    return records.map(record=>{
+        const resultStamp=record.result?.sourceStamp,resultPositions=resultStamp?(positions.get(resultStamp)??[]):[];
+        const expected=record.stamps?.length,prefix=Array.isArray(record.stamps)&&record.stamps.every((stamp,i)=>stamps[i]===stamp);
+        const inferred=!resultStamp&&prefix&&expected<stamps.length&&roles[expected]==='assistant';
+        const resultState=resultStamp?(resultPositions.length===1?'present':resultPositions.length?'ambiguous':'missing'):(inferred?'present':'unbound');
+        return {...record,resultState,resultIndex:resultPositions.length===1?resultPositions[0]:inferred?expected:null,
         sourceChanged:!Array.isArray(record.stamps)||record.stamps.some((stamp,i)=>stamps[i]!==stamp),
         items:record.items.map(item=>{
             const stamp=item.sourceStamp??record.stamps?.[item.index],found=positions.get(stamp)??[];
             return {...item,sourceState:!stamp?'unknown':found.length===1?'present':found.length?'ambiguous':'missing',currentIndex:found.length===1?found[0]:null};
         }),
-    }));
+    };});
 }
