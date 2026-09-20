@@ -36,7 +36,7 @@ export function directConfig(input,previous={},requireModel=true) {
     return {connection:'direct',provider,baseUrl,apiKey,model};
 }
 
-export function providerRequest(config,{messages,selection=false,models=false}={}) {
+export function providerRequest(config,{messages,selection=false,models=false,maxTokens,temperature,topP}={}) {
     const {provider,baseUrl,apiKey,model}=config,p=PROVIDERS[provider];
     // Construct from scratch: never inherit main-model credentials, tools or vendor options.
     const body={chat_completion_source:p.source,secret_id:'folio-no-inherited-secret',reverse_proxy:'',proxy_password:'',custom_include_headers:'',custom_include_body:'',custom_exclude_body:''};
@@ -51,8 +51,9 @@ export function providerRequest(config,{messages,selection=false,models=false}={
     if(models&&provider==='claude')Object.assign(body,{chat_completion_source:'custom',custom_url:baseUrl,reverse_proxy:'',proxy_password:'',
         custom_include_headers:JSON.stringify({Authorization:'','x-api-key':apiKey,'anthropic-version':'2023-06-01'})});
     if(models)return body;
-    Object.assign(body,{model,messages,stream:false,type:'quiet',max_tokens:selection?1200:850,include_reasoning:false,use_sysprompt:true});
-    // Omit sampling settings: several reasoning models reject temperature outright.
+    Object.assign(body,{model,messages,stream:false,type:'quiet',max_tokens:maxTokens??(selection?1200:850),include_reasoning:false,use_sysprompt:true});
+    if(temperature!=null)body.temperature=temperature;if(topP!=null)body.top_p=topP;
+    // Omit sampling unless explicitly configured: some reasoning models reject it.
     if(p.source==='custom'&&/(?:^|\/)deepseek-(?:flash|pro|v4(?:[-/]|$))/i.test(model))
         body.custom_include_body=JSON.stringify({thinking:{type:'disabled'}});
     return body;

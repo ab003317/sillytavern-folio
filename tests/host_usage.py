@@ -55,6 +55,23 @@ with sync_playwright() as p:
         switch=page.get_by_role('switch',name='新回覆自動記憶',exact=True)
         assert not switch.is_checked()
         assert page.locator('.folio-toggle-state').inner_text()=='已關閉'
+        page.get_by_role('tab',name='記憶助手',exact=True).click()
+        assert page.get_by_role('button',name='已使用酒館主 API',exact=True).is_visible()
+        assert not page.locator('#folio-summary-source').is_visible()
+        page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-tiers-main-desktop.png'))
+        page.set_viewport_size({'width':390,'height':844});page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-tiers-main-mobile.png'))
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
+        assert page.locator('#folio-summary-source').is_visible()
+        assert not page.get_by_label('總結溫度',exact=True).is_visible()
+        page.locator('summary').filter(has_text='進階參數與提示詞').click()
+        assert page.get_by_label('總結溫度',exact=True).is_visible()
+        assert page.locator('.folio-content').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
+        page.locator('summary').filter(has_text='進階參數與提示詞').scroll_into_view_if_needed()
+        page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-tiers-advanced-mobile.png'))
+        page.get_by_role('button',name='關閉',exact=True).click()
+        page.locator('#extensionsMenuButton').click();page.locator('#folio-wand').click()
+        assert not page.locator('#folio-summary-source').is_visible()
+        page.set_viewport_size({'width':1440,'height':1050})
         page.get_by_role('button',name='關閉',exact=True).click()
         result=page.evaluate("""async prefix=>{
           const real=SillyTavern.getContext(),originalChat=JSON.stringify(real.chat),originalSettings=JSON.stringify(real.chatCompletionSettings);
@@ -107,12 +124,13 @@ with sync_playwright() as p:
         page.evaluate('usageTest.send()')
         page.wait_for_function("document.querySelectorAll('.folio-usage-bar option').length===2")
         assert page.locator('.folio-source-missing').count()==0
+        page.locator('summary').filter(has_text='較早的取用紀錄').click()
         page.get_by_label('發送紀錄',exact=True).select_option(index=1)
         assert page.locator('.folio-source-missing').count()==2
         final=page.evaluate("""()=>{const t=usageTest;const intact=JSON.stringify(t.real.chat)===t.originalChat&&JSON.stringify(t.real.chatCompletionSettings)===t.originalSettings;t.real.eventSource.removeListener(t.real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,t.observe);window.folioIntercept=t.previous;t.engine.dispose();t.ui.dispose();return intact;}""")
         assert final
         assert len(mock_sends)==3,mock_sends
         assert not errors,errors
-        print(json.dumps({'passed':True,'installedVersion':version,'oldChatAutomaticCalls':0,'oldChatManualPending':1,'nativeWand':True,'installedManualQueue':True,'installedManualPopup':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
+        print(json.dumps({'passed':True,'installedVersion':version,'installedThreeLayers':True,'oldChatAutomaticCalls':0,'oldChatManualPending':1,'nativeWand':True,'installedManualQueue':True,'installedManualPopup':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
     finally:
         browser.close()

@@ -58,6 +58,7 @@ with sync_playwright() as p:
         assert version==json.loads((ROOT/'manifest.json').read_text(encoding='utf-8'))['version']
         page.locator('#extensionsMenuButton').click();page.locator('#folio-wand').click()
         page.get_by_role('tab',name='記憶助手').click()
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
         assert page.locator('#folio-summary-source option').count()==8
         page.locator('#folio-summary-source').select_option('custom')
         page.locator('#folio-summary-url').fill('https://openrouter.ai/api/v1')

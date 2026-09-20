@@ -51,6 +51,7 @@ with sync_playwright() as p:
         page.wait_for_function('window.fixtureReady===true')
         page.locator('#folio-wand').click()
         page.get_by_role('tab',name='記憶助手').click()
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
         summary=page.locator('.folio-helper-section').nth(0)
         extraction=page.locator('.folio-helper-section').nth(1)
         assert page.locator('#folio-summary-source').input_value()=='saved'
@@ -94,6 +95,7 @@ with sync_playwright() as p:
         assert page.locator('.folio-content').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
         page.reload();page.wait_for_function('window.fixtureReady===true')
         page.locator('#folio-wand').click();page.get_by_role('tab',name='記憶助手').click()
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
         assert page.locator('#folio-summary-source').input_value()=='custom'
         assert page.locator('#folio-selection-source').input_value()=='claude'
         assert page.locator('#folio-summary-key').input_value()==''

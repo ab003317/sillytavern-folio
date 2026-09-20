@@ -1,10 +1,12 @@
 import { PROVIDERS, normalizeEndpoint } from './providers.js';
+import { fold, mountAdvancedOptions } from './settings-ui.js';
 
 export function mountApiForms(engine,container,{el,button,info,heading}) {
     const fields={};let state=engine.snapshot();
-    container.append(heading('兩個模型，分開設定','可以直接填各家 API，也可以沿用酒館已保存的連線。總結與提取各自保存；取得列表不等於模型可用，請再按測試。'),
-        el('p','folio-prose','總結模型寫小摘要；提取模型看小摘要，選回需要的正文。不改主聊天的連線或模型。'));
-    const grid=el('div','folio-helper-grid');container.append(grid);
+    const current=el('p','folio-api-current'),main=button('全部使用酒館主 API',()=>{engine.host.configureApiMode('main');engine.cancel();engine.connectionTests={summary:null,selection:null};engine.emit();engine.schedule();},'folio-primary');main.setAttribute('aria-pressed','false');
+    container.append(heading('記憶助手','總結助手寫摘要；提取助手看摘要，選回需要的正文。預設兩者都跟隨酒館主 API 與目前模型。'),current,main);
+    const customization=fold(el,'不同 API 與模型'),grid=el('div','folio-helper-grid');customization.append(el('p','folio-muted','需要分開時才設定。已保存的獨立連線會保留；保存任一用途或按下「啟用已保存的獨立設定」後使用方案二。'),button('啟用已保存的獨立設定',()=>{engine.host.configureApiMode('separate');engine.cancel();engine.connectionTests={summary:null,selection:null};engine.emit();engine.schedule();}),grid);container.append(customization);
+    const advanced=mountAdvancedOptions(engine,customization,{el,button,info,heading});
     for(const [role,label,description]of [['summary','總結模型','寫目錄：清理後正文與玩家背景 → 標題、小摘要。'],['selection','提取模型','選正文：本次問題與候選小摘要 → 所需書頁及原因。']]){
         const section=el('section','folio-helper-section'),source=el('select'),connection=el('select'),url=el('input'),key=el('input'),model=el('input'),list=el('datalist'),picker=el('select');
         const configured=el('p','folio-muted'),result=el('div','folio-connection-result'),feedback=el('p','folio-api-feedback'),listStatus=el('p','folio-muted');
@@ -50,7 +52,7 @@ export function mountApiForms(engine,container,{el,button,info,heading}) {
             engine.cancel();engine.connectionTests[role]=null;engine.retry();feedback.textContent='已保存。';
         }
         function action(task){return async()=>{feedback.textContent='';try{await task();}catch(e){feedback.textContent=e.message||'操作未完成，請稍後重試';}};}
-        f.test=button(`測試${label}`,action(async()=>{if(f.dirty)save();await engine.testHelper(role);}));
+        f.test=button(`測試${label}`,action(async()=>{if(f.dirty||state.apiMode==='main')save();await engine.testHelper(role);}));
         const actions=el('div','folio-toolbar');actions.append(button(`保存${label}`,action(save),'folio-primary'),f.test);
         const modelsBar=el('div','folio-toolbar');modelsBar.append(f.fetch);modelField.append(modelsBar,picker,listStatus);
         section.append(heading(label),el('p','folio-muted',description),sourceField,connectionField,urlField,keyField,modelField,configured,actions,feedback,result);grid.append(section);
@@ -69,12 +71,13 @@ export function mountApiForms(engine,container,{el,button,info,heading}) {
                 configured.textContent=`已保存：${config.label||'目前聊天連線'} / ${config.model||'尚未填寫模型'}${config.lastModel?`；最近呼叫：${config.lastModel}`:''}`;}
             visibility();f.test.disabled=state.busy;
             const keyOptions=source.value+connection.value+JSON.stringify(state.profiles);
-            if(f.optionsKey!==keyOptions){f.optionsKey=keyOptions;if(source.value==='saved')load();}
+            if(customization.open&&f.optionsKey!==keyOptions){f.optionsKey=keyOptions;if(source.value==='saved')load();}
             if(!f.dirty){const outcome=state.connectionTests[role];result.replaceChildren();
                 if(outcome)result.append(el('p',outcome.ok?'folio-observed':'folio-muted',outcome.pending?'正在測試這個用途…':outcome.ok?`${outcome.model} 測試通過，用時 ${(outcome.ms/1000).toFixed(1)} 秒。`:`測試未通過：${outcome.error}`));
                 if(outcome?.ok)result.append(el('p','folio-summary-text',outcome.summary));}
         };
     }
-    container.append(heading('向量已內建'),el('p','folio-prose','BGE-small-zh-v1.5 在本機瀏覽器運行。不用填第三個模型，不需要向量 API、Ollama 或額外程式。'));
-    return {render(next){state=next;for(const f of Object.values(fields))f.render();},conceal(){for(const f of Object.values(fields)){f.key.type='password';f.show.textContent='顯示';}},dispose(){for(const f of Object.values(fields))f.controller?.abort();}};
+    container.append(el('p','folio-muted','向量已內建，會在本機運行。'));
+    customization.addEventListener('toggle',()=>{if(customization.open)for(const f of Object.values(fields))f.render();});
+    return {render(next){state=next;const follows=state.apiMode==='main';main.setAttribute('aria-pressed',String(follows));main.textContent=follows?'已使用酒館主 API':'全部使用酒館主 API';current.textContent=follows?`方案一：總結與提取都跟隨酒館目前的 API 和模型${state.mainModel?'（'+state.mainModel+'）':''}。`:'方案二：正在使用已保存的獨立設定；展開下方可查看與修改。';for(const f of Object.values(fields))f.render();advanced.render(state);},conceal(){for(const f of Object.values(fields)){f.key.type='password';f.show.textContent='顯示';}},dispose(){for(const f of Object.values(fields))f.controller?.abort();}};
 }

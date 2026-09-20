@@ -135,6 +135,7 @@ with sync_playwright() as p:
         page.get_by_role('tab',name='本次取用').click()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-selection.png'))
         page.get_by_role('tab',name='記憶助手').click()
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
         page.get_by_role('button',name='測試總結模型',exact=True).click()
         page.wait_for_function("liveFixture.engine.connectionTests.summary && !liveFixture.engine.connectionTests.summary.pending",timeout=65000)
         assert page.evaluate('liveFixture.engine.connectionTests.summary.ok'),page.evaluate('liveFixture.engine.connectionTests.summary')

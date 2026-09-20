@@ -108,6 +108,7 @@ with sync_playwright() as p:
         # Pause cancels background work; no orphan worker/server at shutdown.
         page.locator('#folio-wand').click()
         page.get_by_role('tab',name='記憶助手').click()
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
         page.get_by_label('總結模型名稱',exact=True).fill('fixture-summary')
         page.get_by_role('button',name='保存總結模型',exact=True).click()
         page.get_by_label('提取模型名稱',exact=True).fill('fixture-extract')

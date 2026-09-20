@@ -1,5 +1,6 @@
 import { estimatedTokens } from './core.js';
 import { PROVIDERS, directConfig, providerRequest, modelIds, apiError } from './providers.js';
+import { memoryOptions, generationOptions, rolePrompt, checkContext } from './settings.js';
 export const MODEL_ROLES = {summary:'總結模型',selection:'提取模型'};
 
 export function helperPayload(model) {
@@ -49,6 +50,7 @@ export class Host {
         }
         const s=c.extensionSettings.folio;
         s.account ||= uid();
+        if(!s.apiMode){s.apiMode=s.helpers||s.helperConnection||s.helperModel?'separate':'main';c.saveSettingsDebounced();}
         if(!s.helpers){
             const legacy=s.helperConnection??'auto',profiles=this.profiles();
             const profile=legacy==='auto'?profiles.find(p=>/flash|mini|haiku|small|nano|[1378]b\b/i.test(`${p.name} ${p.model}`)):profiles.find(p=>p.id===legacy);
@@ -65,8 +67,12 @@ export class Host {
         try { return this.context().ConnectionManagerRequestService?.getSupportedProfiles() ?? []; }
         catch { return []; }
     }
-    helper(role='summary') {
+    helper(role='summary',saved=false) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
+        if(!saved&&this.settings().apiMode==='main'){
+            const o=this.context().chatCompletionSettings??{},source=o.chat_completion_source;
+            return {connection:'main',model:String(o[`${source}_model`]??(source==='makersuite'?o.google_model:undefined)??o.model??''),label:'酒館主 API（跟隨目前模型）',role,provider:'',baseUrl:'',hasKey:false};
+        }
         const config=this.settings().helpers[role],profile=config.connection==='current'?null:this.profiles().find(p=>p.id===config.connection);
         return {profile,connection:config.connection,model:config.model.trim(),label:config.connection==='direct'?(PROVIDERS[config.provider]?.label??'自訂接口'):profile?.name||'目前聊天連線',role,
             provider:config.provider??'',baseUrl:config.baseUrl??'',hasKey:!!config.apiKey};
@@ -76,12 +82,24 @@ export class Host {
         if(!model.trim())throw new Error(`請填寫${MODEL_ROLES[role]}名稱`);
         if(connection!=='current'&&!this.profiles().some(p=>p.id===connection))throw new Error('連線已不存在，請重新選擇');
         this.settings().helpers[role]={connection,model:model.trim()};
+        this.settings().apiMode='separate';
         this.rejected.clear();this.context().saveSettingsDebounced();
     }
     configureDirect(role,input) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
         const config=directConfig(input,this.settings().helpers[role]);
-        this.settings().helpers[role]=config;this.models[role]='';this.context().saveSettingsDebounced();
+        this.settings().helpers[role]=config;this.settings().apiMode='separate';this.models[role]='';this.context().saveSettingsDebounced();
+    }
+    configureApiMode(mode){if(!['main','separate'].includes(mode))throw new Error('請選擇 API 方案');this.settings().apiMode=mode;this.models={summary:'',selection:''};this.context().saveSettingsDebounced();}
+    memory(){return memoryOptions(this.settings().memory);}
+    advanced(role){return generationOptions(this.settings().advanced?.[role],role);}
+    configureMemory(input){this.settings().memory=memoryOptions(input);this.context().saveSettingsDebounced();}
+    configureAdvanced(role,input){if(!MODEL_ROLES[role])throw new Error('未知模型用途');const value=generationOptions(input,role);this.settings().advanced??={};this.settings().advanced[role]=value;this.context().saveSettingsDebounced();}
+    summaryChunkSize(){
+        const a=this.advanced('summary');if(!a.contextTokens)return 3600;
+        const available=a.contextTokens-a.maxTokens-estimatedTokens(rolePrompt('summary',a,this.memory()))-estimatedTokens('背'.repeat(1200))-256;
+        if(available<300)throw new Error('總結上下文不足以容納提示詞與玩家背景；請增加上下文長度或縮短提示詞');
+        return Math.max(180,Math.min(3600,Math.floor(available/1.5)));
     }
     async fetchModels(role,input,{signal}={}) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
@@ -109,7 +127,7 @@ export class Host {
         }finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
     }
     async modelChoices(role='summary',connection=this.helper(role).connection) {
-        const helper=this.helper(role),profile=this.profiles().find(p=>p.id===connection);
+        const helper=this.helper(role,true),profile=this.profiles().find(p=>p.id===connection);
         if(profile)return [...new Set([profile.model,helper.model].filter(Boolean))];
         const api=await this.api();
         return [...new Set([api.getChatCompletionModel(this.context().chatCompletionSettings),...(api.model_list??[]).map(x=>x.id)].filter(Boolean))];
@@ -135,22 +153,24 @@ export class Host {
     async complete(system, prompt, {signal, selection = false} = {}) {
         const c = this.context();
         const role=selection?'selection':'summary',helper=this.helper(role),label=MODEL_ROLES[role];
+        const advanced=this.advanced(role);system=rolePrompt(role,advanced,this.memory());checkContext(system,prompt,advanced);
+        if(helper.connection==='main'){const api=await this.api();helper.model=api.getChatCompletionModel(c.chatCompletionSettings??{})||'';}
         if(!helper.model)throw new Error(`請在「記憶助手」填寫${label}`);
         if(helper.connection==='direct'){
             const config=directConfig(this.settings().helpers[role]);this.model=config.model;this.models[role]=config.model;
-            return completionText(await this.directRequest(config,{signal,selection,messages:[{role:'system',content:system},{role:'user',content:prompt}]},label));
+            return completionText(await this.directRequest(config,{signal,selection,maxTokens:advanced.maxTokens,temperature:advanced.temperature,topP:advanced.topP,messages:[{role:'system',content:system},{role:'user',content:prompt}]},label));
         }
         if (c.mainApi !== 'openai') throw new Error('目前先支援酒館的「聊天補全」連線；原本聊天不受影響');
-        if(helper.connection!=='current'&&!helper.profile)throw new Error(`${label}的連線已不存在，請重新選擇`);
+        if(!['current','main'].includes(helper.connection)&&!helper.profile)throw new Error(`${label}的連線已不存在，請重新選擇`);
         if(helper.profile){
             const controller=new AbortController();const abort=()=>controller.abort(signal?.reason??new DOMException('Cancelled','AbortError'));
             signal?.throwIfAborted();signal?.addEventListener('abort',abort,{once:true});
             const timer=setTimeout(()=>controller.abort(new Error(`${label}連線超時，稍後可重試`)),60000);
             this.model=helper.model;this.models[role]=helper.model;
             try{
-                const data=await c.ConnectionManagerRequestService.sendRequest(helper.profile.id,[{role:'system',content:system},{role:'user',content:prompt}],selection?1200:850,
+                const data=await c.ConnectionManagerRequestService.sendRequest(helper.profile.id,[{role:'system',content:system},{role:'user',content:prompt}],advanced.maxTokens,
                     {stream:false,signal:controller.signal,extractData:false,includePreset:false,includeInstruct:false},
-                    {model:helper.model,temperature:.2,stream:false,type:'quiet',...helperPayload(helper.model)});
+                    {model:helper.model,temperature:advanced.temperature??.2,...(advanced.topP==null?{}:{top_p:advanced.topP}),stream:false,type:'quiet',...helperPayload(helper.model)});
                 return typeof data==='string'?data:completionText(data);
             }catch(e){if(controller.signal.aborted)throw controller.signal.reason;if(e.name==='FolioResponseError')throw e;throw new Error('記憶助手請求失敗，請在「記憶助手」頁測試連線');}
             finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
@@ -167,8 +187,8 @@ export class Host {
         try {
             for (const model of [helper.model]) {
                 controller.signal.throwIfAborted(); this.model = model;this.models[role]=model;
-                const settings = { ...original, stream_openai:false, openai_max_tokens:selection ? 1200 : 850,
-                    temp_openai:.2, freq_pen_openai:0, pres_pen_openai:0, n:1, bias_preset_selected:'',
+                const settings = { ...original, stream_openai:false, openai_max_tokens:advanced.maxTokens,
+                    temp_openai:advanced.temperature??.2,...(advanced.topP==null?{}:{top_p_openai:advanced.topP}), freq_pen_openai:0, pres_pen_openai:0, n:1, bias_preset_selected:'',
                     show_thoughts:false, enable_web_search:false, request_images:false, seed:-1 };
                 const { generate_data:body } = await api.createGenerationParameters(settings, model, 'quiet', [
                     {role:'system', content:system}, {role:'user', content:prompt},

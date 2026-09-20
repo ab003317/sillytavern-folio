@@ -28,6 +28,27 @@ function rig(messages=[message('港口的兩人交換信物，約定明日再見
     return {engine,host,cache,embedder,c,stats:()=>({calls,saves})};
 }
 
+test('memory preferences limit recalled pages and history while preserving the latest complete pair',async()=>{
+    const r=rig(Array.from({length:10},(_,i)=>message('信件正文'+i,i,i%2===0)));ready(r);
+    r.host.memory=()=>({recentPages:1,recallPages:1,historyBudget:40});
+    r.host.complete=async()=>'{"ids":["p1","p3","p5"]}';
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('abort'),'normal');
+    assert.deepEqual(core.map(m=>m.send_date),['t0','t1','t8','t9']);
+    assert.equal(r.engine.last.budget,40);assert.equal(r.engine.last.candidates.filter(p=>p.selected).length,1);
+    r.host.complete=async()=>{const error=new Error('助手輸入超過進階設定的上下文上限');error.name='FolioContextError';throw error;};
+    await r.engine.intercept(structuredClone(r.c.chat),10000,()=>assert.fail('abort'),'normal');
+    assert.equal(r.engine.last.mode,'fallback');assert.match(r.engine.warning,/上下文上限/);
+});
+
+test('partial summaries retain their split boundaries when advanced settings change',async()=>{
+    const text='完整正文。'.repeat(300),r=rig([message(text)]),chunks=[];
+    r.host.summaryChunkSize=()=>500;r.host.complete=async(_s,prompt)=>{chunks.push(JSON.parse(prompt).text);return '{"summary":"分段摘要"}';};
+    await r.engine.tick();assert.equal(bookPages(r.c.chat)[0].record.chunkSize,500);
+    r.host.summaryChunkSize=()=>900;
+    for(let i=0;i<10&&!bookPages(r.c.chat)[0].record.done;i++)await r.engine.tick();
+    assert.equal(chunks.join(''),text);assert.equal(bookPages(r.c.chat)[0].record.done,true);
+});
+
 test('manual refresh really calls summary while auto memory is paused, preserving the automatic setting',async()=>{
     const r=rig();await r.engine.tick();const before=r.stats().calls;r.engine.toggle(false);
     await r.engine.refresh(r.engine.snapshot().entries[0].ref);

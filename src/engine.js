@@ -78,8 +78,8 @@ export class Engine {
             playerInput:p.playerInput,title:p.record?.title||p.record?.rebuild?.previous?.title||excerpt(p.body,32),summary:(!p.record?.done?p.record?.rebuild?.previous?.summary:'')||p.record?.summary||p.record?.parts?.join('\n')||'',
             ready:!!p.record?.done,indexed:!!p.record?.done&&this.vectors.has(this.vectorKey(p.record)),pinned:!!p.record?.pinned,
             rebuilding:this.pendingRebuild(p.record),rebuilt:!!p.record?.done&&!!p.record?.rebuild&&!p.record.rebuild.cancelled,previousSummary:!p.record?.done&&!!p.record?.rebuild?.previous?.summary,
-            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body).length,edited:!!p.record?.edited,automatic:this.autoPages.has(p.message)}));
-        const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
+            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body,p.record?.chunkSize??3600).length,edited:!!p.record?.edited,automatic:this.autoPages.has(p.message)}));
+        const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role,true)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
         const chat=this.host.context().chat??[],usageRecords=this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(chat),chat.map(m=>m.is_system?'system':m.is_user?'user':'assistant')).filter(x=>x.resultState==='present'):[];
         const total=entries.length,ready=entries.filter(p=>p.ready).length,indexed=entries.filter(p=>p.indexed).length,rebuild=this.rebuildState();
         const automaticEntries=entries.filter((_,i)=>this.autoPages.has(pages[i].message)),automaticTotal=automaticEntries.length;
@@ -97,6 +97,7 @@ export class Engine {
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
             resetting:this.resetting,rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),generating:this.generating,chatIdentity:this.host.identity(),auto,
             usages:usageRecords,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
+            apiMode:this.host.settings().apiMode??'main',mainModel:this.host.helper?.('summary')?.model??'',memory:this.host.memory?.(),advanced:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.advanced?.(role)])),
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
     }
     emit() { this.notify(this.snapshot()); }
@@ -190,7 +191,7 @@ export class Engine {
         if(this.conflict)throw new Error('Anima 仍在接管記憶，請先停用衝突插件');
         if(this.generating)throw new Error('正文正在生成，完成後再重新整理');
         if(this.host.context().mainApi!=='openai')throw new Error('請先使用酒館「聊天補全」模式');
-        const helper=this.host.helper?.('summary');if(helper&&!helper.model)throw new Error('請先在記憶助手填寫總結模型');
+        const helper=this.host.helper?.('summary');if(helper&&helper.connection!=='main'&&!helper.model)throw new Error('請先在記憶助手填寫總結模型');
         const identity=pages[0].identity;let locked=false;
         this.resetting=true;this.cancel();this.setStatus('正在建立手動重整任務…');
         try{
@@ -277,7 +278,7 @@ export class Engine {
                 if(indexMode&&this.vectors.has(this.vectorKey(r)))this.indexPages.delete(p.message);
             }
             if(!target){this.work=null;this.setStatus(manualMode?this.warning?'重整摘要已完成；向量暫用文字檢索':'本次重新整理已完成':indexMode?this.warning?'人工摘要已保存；向量暫用文字檢索':'人工摘要與向量已就緒':'已就緒；只會自動整理接下來的新回覆');nextDelay=manualMode?700:15000;return;}
-            const p=target,r=p.record,parts=splitBody(p.body);
+            const p=target,r=p.record;r.chunkSize??=r.parts.length?3600:(this.host.summaryChunkSize?.()??3600);const parts=splitBody(p.body,r.chunkSize);
             this.work={stage:'summary',page:p.number,part:r.parts.length+1,total:parts.length};
             this.setStatus(`正在整理第 ${p.number} 頁（${r.parts.length+1}/${parts.length} 段）`);active(p);
             if(parts[r.parts.length]!==undefined){
@@ -322,7 +323,9 @@ export class Engine {
             for(const m of cleaned){active();costs.push(await this.host.count(m.mes));}
             active();
             if(original.some(m=>this.sourceIndex(m)<0&&!(options.preview&&m.send_date==='folio-preview')))throw new DOMException('Ambiguous or deleted message','AbortError');
-            const budget=budgetFor(contextSize),recent=recentPages(cleaned,costs,budget.recent);
+            const memory=this.host.memory?.()??{},budget=budgetFor(contextSize);
+            if(memory.historyBudget){budget.history=Math.min(budget.history,memory.historyBudget);budget.recent=Math.floor(budget.history*.6);budget.recall=budget.history-budget.recent;}
+            const recent=recentPages(cleaned,costs,budget.recent,memory.recentPages??0);
             const sourcePages=this.pages();
             const entries=bookPages(cleaned).map(p=>{
                 const sourceIndex=this.sourceIndex(original[p.index]),source=sourcePages.find(x=>x.index===sourceIndex),r=source?.record;
@@ -352,8 +355,9 @@ export class Engine {
                         const raw=await this.host.complete(SELECT_SYSTEM,JSON.stringify({query:excerpt(query,1800),recentContext:excerpt(cleanBody(cleaned.findLast(m=>!m.is_user)?.mes??''),700),
                             catalogue:candidates.map(p=>({id:p.id,title:p.title,summary:excerpt(p.summary,900)}))}),{signal,selection:true});
                         active();ids=parseSelection(raw,candidates);selectedReasons=selectionReasons(raw,ids);
-                    }catch(e){active();trace.mode='fallback';warning='選頁助手暫不可用，這次使用最相關的目錄匹配';ids=candidates.filter(p=>p.lexical>0||p.semantic>.5).slice(0,3).map(p=>p.id);}
+                    }catch(e){active();trace.mode='fallback';warning=e.name==='FolioContextError'?`${e.message}；這次暫用目錄匹配`:'選頁助手暫不可用，這次使用最相關的目錄匹配';ids=candidates.filter(p=>p.lexical>0||p.semantic>.5).slice(0,3).map(p=>p.id);}
                 }
+                ids=ids.slice(0,memory.recallPages??8);
                 trace.candidates=candidates.map(p=>({id:p.id,index:p.index,number:p.number,title:p.title,summary:p.summary,semantic:p.semantic,lexical:p.lexical,selected:ids.includes(p.id)||p.pinned,reason:p.pinned?'已釘選':selectedReasons[p.id]??(ids.includes(p.id)?'匹配備援':'助手未選用')}));
                 for(const p of [...older.filter(p=>p.pinned),...ids.map(id=>candidates.find(p=>p.id===id)).filter(Boolean)]){
                     if(chosen.has(p.i))continue;

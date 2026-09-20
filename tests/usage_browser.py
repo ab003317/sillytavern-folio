@@ -83,12 +83,12 @@ with sync_playwright() as p:
           const page=bookPages(testContext.chat).at(-1),record=newRecord(reply,page.playerInput);record.summary=reply.mes;record.done=true;reply.extra[KEY]=record;await events.emit('MESSAGE_RECEIVED');
         }""")
         page.wait_for_function("document.querySelectorAll('.folio-usage-bar option').length===2")
-        assert '第二次合成提問' in page.locator('#folio-view-selection details').first.text_content()
+        assert '第二次合成提問' in page.locator('#folio-view-selection details').nth(1).text_content()
         # Deleting that response must roll back to the old receipt whose response still exists.
         page.evaluate("testContext.chat.pop();events.emit('MESSAGE_DELETED');testContext.saveChat();")
         page.wait_for_function("document.querySelectorAll('.folio-usage-bar option').length===1")
         assert page.locator('.folio-usage-bar select').inner_text()==old_text
-        assert '我還欠船長什麼約定？' in page.locator('#folio-view-selection details').first.text_content()
+        assert '我還欠船長什麼約定？' in page.locator('#folio-view-selection details').nth(1).text_content()
         # Delete a used source pair and confirm shifted surviving positions never relabel the source.
         page.evaluate("testContext.chat.splice(0,2);events.emit('MESSAGE_DELETED');testContext.saveChat();")
         page.wait_for_function("document.querySelector('.folio-source-missing')?.textContent==='來源已刪除或變更'")
@@ -113,6 +113,7 @@ with sync_playwright() as p:
         }""")
         page.wait_for_function("document.querySelectorAll('.folio-usage-bar select option').length===2")
         assert page.locator('.folio-source-missing').count()==0
+        page.locator('summary').filter(has_text='較早的取用紀錄').click()
         page.get_by_label('發送紀錄',exact=True).select_option(index=1)
         assert page.locator('.folio-source-missing').count()==2
         # Atomic read/merge/write across two real IndexedDB connections.

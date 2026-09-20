@@ -90,7 +90,7 @@ export function bookPages(chat) {
     return pages;
 }
 
-export function recentPages(chat, costs, budget) {
+export function recentPages(chat, costs, budget, count=0) {
     const pages = bookPages(chat), picked = new Set(); let used = 0;
     const add = indices => { for(const i of indices)if(!picked.has(i)){picked.add(i);used+=costs[i];} };
     const last = pages.at(-1);
@@ -99,7 +99,7 @@ export function recentPages(chat, costs, budget) {
     for(let p=pages.length-1;p>=0;p--){
         const indices=[...pages[p].userIndices,pages[p].index];
         const cost=indices.filter(i=>!picked.has(i)).reduce((n,i)=>n+costs[i],0);
-        if(p<pages.length-1 && used+cost>budget)break;
+        if(p<pages.length-1 && ((count&&pages.length-p>count)||used+cost>budget))break;
         add(indices);
     }
     return {picked,used};
