@@ -1,7 +1,7 @@
 import { KEY, MODEL, bookPages, isStoryMessage, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
     excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, SUMMARY_SYSTEM, SELECT_SYSTEM } from './core.js';
 import { uid } from './host.js';
-import { mergeUsage, usageView } from './usage.js';
+import { mergeUsage, usageView, bindResponse } from './usage.js';
 
 export class Engine {
     constructor(host, cache, embedder, notify = () => {}) {
@@ -15,7 +15,7 @@ export class Engine {
         this.resetting=false;this.idle=Promise.resolve();this.queuedRebuild=null;
         this.generationVersion=0;this.rebuildOperation=null;this.rebuildSetup=Promise.resolve();this.stopping=false;this.stopTask=null;
         this.stopFailures=new Set();
-        this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.pendingUsage=null;
+        this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.usageLoading=false;this.pendingUsage=null;
         this.autoPages=new Set();this.seenPages=new Set();this.indexPages=new Set();
         this.vectorLoad=0;this.vectorLoading=false;this.vectorHydration=Promise.resolve();
     }
@@ -54,13 +54,23 @@ export class Engine {
             vectors:group.filter(r=>this.hasVector(r)&&!r.rebuild.cancelled).length,vectorFallback:group.some(r=>r.done&&!r.rebuild.cancelled&&!this.hasVector(r)),complete:pending===0};
     }
     traceValid(trace){return trace&&samePrefix(trace.stamps,chatStamps(this.host.context().chat??[]));}
+    usageViews(records=this.usages){const chat=this.host.context().chat??[];return usageView(records,chatStamps(chat),chat.map(m=>!isStoryMessage(m)?'system':m.is_user?'user':'assistant'),chat);}
+    adoptUsage(records){
+        const chat=this.host.context().chat??[],stamps=chatStamps(chat),merged=mergeUsage(records);
+        return this.usageViews(merged).map(view=>{
+            const original=merged.find(r=>r.id===view.id);if(view.resultState!=='present'||original.result?.messageId)return original;
+            return {...original,receiptVersion:2,result:bindResponse(chat[view.resultIndex],view.resultIndex,stamps[view.resultIndex],uid())};
+        });
+    }
     loadUsage(identity) {
-        this.usages=[];this.usageIdentity=identity;this.usageError='';const load=++this.usageLoad;
+        this.usages=identity?this.adoptUsage(this.host.readUsage?.()??[]):[];this.usageIdentity=identity;this.usageError='';this.usageLoading=!!identity;const load=++this.usageLoad;
         if(!identity)return;
         this.cache.get('records','usage:'+identity).then(records=>{
-            if(load!==this.usageLoad||identity!==this.host.identity())return;
-            this.usages=mergeUsage(this.usages,Array.isArray(records)?records:[]);this.emit();
-        }).catch(()=>{if(load===this.usageLoad){this.usageError='發送紀錄暫時無法讀取，請稍後重新開啟聊天';this.emit();}});
+            if(this.disposed||load!==this.usageLoad||identity!==this.host.identity())return;
+            this.usages=this.adoptUsage(mergeUsage(this.usages,Array.isArray(records)?records:[]));
+            if(this.usages.length)this.rememberUsage(this.usages[0],identity);this.emit();
+        }).catch(()=>{if(!this.disposed&&load===this.usageLoad)this.usageError=this.usages.length?'本機備份讀取失敗，已顯示聊天中保存的取用紀錄':'發送紀錄暫時無法讀取，請稍後重新開啟聊天';})
+            .finally(()=>{if(!this.disposed&&load===this.usageLoad){this.usageLoading=false;this.emit();}});
     }
     rememberUsage(trace,identity=this.host.identity()) {
         if(!identity||!mergeUsage([trace]).length)return;
@@ -70,21 +80,28 @@ export class Engine {
             this.usages=mergeUsage([receipt],this.usages);
         }
         const records=identity===this.usageIdentity?structuredClone(this.usages):[receipt];
-        this.usageWrite=this.usageWrite.catch(()=>{}).then(()=>this.cache.appendUsage(identity,records)).then(saved=>{
-            if(identity===this.host.identity()&&identity===this.usageIdentity){this.usages=mergeUsage(this.usages,saved);this.usageError='';this.emit();}
-        }).catch(()=>{if(identity===this.host.identity()){this.usageError='發送紀錄暫時只保留在此視窗：本機保存失敗，請檢查瀏覽器儲存空間';this.emit();}});
+        const ticket=this.host.stageUsage?.(identity,records);
+        this.usageWrite=this.usageWrite.catch(()=>{}).then(async()=>{
+            const [local,chat]=await Promise.allSettled([this.cache.appendUsage(identity,records),this.host.flushUsage?.(ticket)]);
+            if(chat.status==='rejected'&&identity===this.host.identity())this.usageError='取用紀錄的聊天備份保存失敗；本機副本保留，請檢查酒館連線';
+            if(local.status==='rejected')throw local.reason;
+            return {records:local.value,chatFailed:chat.status==='rejected'};
+        }).then(({records:saved,chatFailed})=>{
+            if(!this.disposed&&identity===this.host.identity()&&identity===this.usageIdentity){this.usages=mergeUsage(this.usages,saved);if(!chatFailed)this.usageError='';this.emit();}
+        }).catch(()=>{if(identity===this.host.identity()){this.usageError='取用紀錄的本機保存失敗；不要清除網站資料，請檢查儲存空間及酒館聊天是否正常保存';this.emit();}});
     }
-    responseReceived({replacement=false}={}) {
+    responseReceived({replacement=false,messageId,type}={}) {
         const pending=this.pendingUsage;if(!pending||pending.identity!==this.host.identity())return;
-        const chat=this.host.context().chat??[],stamps=chatStamps(chat);let index=pending.stamps.length;
-        if(!samePrefix(pending.stamps,stamps)){
-            const replaced=replacement&&stamps.length===pending.stamps.length&&index>0&&samePrefix(pending.stamps.slice(0,-1),stamps.slice(0,-1));
-            if(!replaced)return;index--;
-        }
-        while(index<chat.length&&(chat[index].is_user||!isStoryMessage(chat[index])))index++;
-        if(index>=chat.length)return;
-        const receipt=this.usages.find(x=>x.id===pending.id);if(!receipt)return;
-        const result={sourceStamp:stamps[index],index,boundAt:Date.now()};receipt.result=result;this.pendingUsage=null;
+        const chat=this.host.context().chat??[],stamps=chatStamps(chat),kind=type??pending.type;
+        const replacing=replacement||['swipe','continue','append','appendFinal'].includes(kind);
+        let index=Number.isInteger(messageId)?messageId:pending.stamps.length-(replacing?1:0);
+        if(!Number.isInteger(messageId))while(index<chat.length&&(chat[index].is_user||!isStoryMessage(chat[index])))index++;
+        const message=chat[index];if(!message||message.is_user||!isStoryMessage(message)||!String(message.mes??'').trim()||message.mes==='...')return;
+        if(replacing){
+            if(index!==pending.stamps.length-1||pending.objects[index]!==message||stamps[index]===pending.stamps[index]||!samePrefix(pending.stamps.slice(0,index),stamps.slice(0,index)))return;
+        }else if(index<pending.stamps.length||pending.objects.includes(message)||!samePrefix(pending.stamps,stamps))return;
+        const receipt=pending.trace;
+        const result=bindResponse(message,index,stamps[index],uid(),{fresh:kind==='swipe'||!replacing});receipt.result=result;this.pendingUsage=null;
         if(this.last?.id===receipt.id){this.last.result=result;this.rememberTrace(this.last);}else this.emit();
         this.rememberUsage(receipt,pending.identity);
     }
@@ -106,7 +123,7 @@ export class Engine {
             rebuilding:this.pendingRebuild(p.record),rebuilt:!!p.record?.done&&!!p.record?.rebuild&&!p.record.rebuild.cancelled,previousSummary:!p.record?.done&&!!p.record?.rebuild?.previous?.summary,
             parts:p.record?.parts?.length??0,totalParts:splitBody(p.body,p.record?.chunkSize??3600).length,edited:!!p.record?.edited,hidden:!!p.message.is_system,automatic:this.autoPages.has(p.message)}));
         const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role,true)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
-        const chat=this.host.context().chat??[],usageRecords=this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(chat),chat.map(m=>!isStoryMessage(m)?'system':m.is_user?'user':'assistant')).filter(x=>x.resultState==='present'):[];
+        const usageViews=this.usageIdentity===this.host.identity()?this.usageViews():[],usageRecords=usageViews.filter(x=>x.resultState==='present');
         const total=entries.length,ready=entries.filter(p=>p.ready).length,indexed=entries.filter(p=>p.indexed).length,rebuild=this.rebuildState();
         const automaticEntries=entries.filter((_,i)=>this.autoPages.has(pages[i].message)),automaticTotal=automaticEntries.length;
         const automaticReady=automaticEntries.filter(p=>p.ready).length,automaticIndexed=automaticEntries.filter(p=>p.indexed).length;
@@ -122,7 +139,7 @@ export class Engine {
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
             resetting:this.resetting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
-            usages:usageRecords,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
+            usages:usageRecords,usageArchive:usageViews.filter(x=>x.resultState!=='present'),usageLoading:this.usageLoading,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
             apiMode:this.host.settings().apiMode??'main',apiSaving:!!this.host.apiSaveTask,mainModel:this.host.helper?.('summary')?.model??'',activeHelpers:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.helperStatus?.(role)])),memory:this.host.memory?.(),advanced:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.advanced?.(role)])),
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
     }
@@ -130,16 +147,16 @@ export class Engine {
     log(message) { this.activity.unshift({time:Date.now(),message}); this.activity.length=Math.min(50,this.activity.length); }
     setStatus(text) { this.status=this.conflict?'Anima 仍啟用；書頁暫停，避免重複處理歷史':text; this.emit(); }
     schedule(ms=1800) { clearTimeout(this.timer); if(!this.disposed)this.timer=setTimeout(()=>{this.tick().catch(()=>{});},ms); }
-    cancel() { this.epoch++;this.controller?.abort();this.selectController?.abort();this.awaitingFinal=false;this.pendingUsage=null; }
+    cancel({forgetPending=false}={}) { this.epoch++;this.controller?.abort();this.selectController?.abort();this.awaitingFinal=false;if(forgetPending)this.pendingUsage=null; }
     changed({deleted=false}={}) {
-        this.cancel();this.warning='';this.failures=0;
         const identity=this.host.identity(),stamps=chatStamps(this.host.context().chat??[]);
+        this.cancel({forgetPending:deleted||identity!==this.currentIdentity});this.warning='';this.failures=0;
         if(identity!==this.currentIdentity){
             this.queuedRebuild=null;
             this.vectors.clear();this.autoPages.clear();this.indexPages.clear();this.last=null;this.activity=[];this.notice='';this.currentIdentity=identity;const load=++this.traceLoad;
             this.loadUsage(identity);
-            if(identity)this.cache.get('records','trace:'+identity).then(trace=>{if(identity===this.currentIdentity&&load===this.traceLoad&&!this.last&&trace){
-                if(trace.final&&!trace.preview)this.rememberUsage(trace,identity);
+            if(identity)this.cache.get('records','trace:'+identity).then(trace=>{if(!this.disposed&&identity===this.currentIdentity&&load===this.traceLoad&&!this.last&&trace){
+                if(trace.final&&!trace.preview){const [receipt]=this.adoptUsage([trace]);if(receipt)this.rememberUsage(receipt,identity);}
                 if(this.traceValid(trace))this.last=trace;else this.invalidateTrace();this.emit();}}).catch(()=>{});
             this.prune();
         }else if(deleted||!samePrefix(this.observedStamps,stamps)){
@@ -152,8 +169,9 @@ export class Engine {
         this.loadVectors();
         this.setStatus(identity?'已就緒；舊聊天只在一鍵重新整理時處理':'等待開啟聊天');this.schedule();
     }
-    newResponse({replacement=false}={}) {
-        this.responseReceived({replacement});const pages=this.pages(),live=new Map(pages.map(p=>[p.message,p]));
+    newResponse({replacement=false,messageId,type}={}) {
+        replacement=replacement||['swipe','continue','append','appendFinal'].includes(type);
+        this.responseReceived({replacement,messageId,type});const pages=this.pages(),live=new Map(pages.map(p=>[p.message,p]));
         for(const message of this.autoPages)if(!live.has(message))this.autoPages.delete(message);
         const unfinished=[...this.autoPages].some(message=>{const p=live.get(message),r=p?.record;return p&&(!r?.done||!this.vectors.has(this.vectorKey(r)));});
         if(!unfinished)this.autoPages.clear();
@@ -166,6 +184,7 @@ export class Engine {
     }
     generationStarted(type='normal',options={},dryRun=false) {
         if(dryRun||type==='quiet')return;
+        this.pendingUsage=null;
         this.generationVersion++;this.generating=true;this.generationGuard=null;this.controller?.abort();this.emit();this.schedule();
     }
     async reconcileGeneration() {
@@ -174,6 +193,7 @@ export class Engine {
         if(this.generating!==active){this.generating=active;if(active)this.controller?.abort();this.emit();}
     }
     async generationEnded() {
+        this.responseReceived();this.pendingUsage=null;
         const version=++this.generationVersion;this.generating=false;this.emit();this.schedule(0);
         await this.reconcileGeneration();
         if(this.disposed||version!==this.generationVersion||this.generating)return;
@@ -467,7 +487,7 @@ export class Engine {
             for(const p of entries)if(recent.picked.has(p.i))for(const i of p.userIndices)if(!recent.picked.has(i)){recent.picked.add(i);recent.used+=costs[i];}
             const older=entries.filter(p=>!recent.picked.has(p.i));
             const query=options.query||cleanBody(original.findLast(m=>m.is_user)?.mes??original.at(-1).mes);
-            const trace={id:uid(),stamps,createdAt:Date.now(),preview:!!options.preview,query,mode:'recent',budget:budget.history,beforeTokens:costs.reduce((a,b)=>a+b,0),candidates:[],items:[],skipped:[]};
+            const trace={id:uid(),stamps,createdAt:Date.now(),type,receiptVersion:2,preview:!!options.preview,query,mode:'recent',budget:budget.history,beforeTokens:costs.reduce((a,b)=>a+b,0),candidates:[],items:[],skipped:[]};
             let chosen=new Set(recent.picked),used=recent.used,warning='';
             const reasons=new Map([...chosen].map(i=>[i,cleaned[i].is_user?'近期玩家輸入':'近期正文']));
             if(older.some(p=>!p.ready)){
@@ -548,9 +568,8 @@ export class Engine {
             }
         }
         this.last.stage='observed';this.last.final={observedAt:Math.max(Date.now(),(this.usages[0]?.final?.observedAt??0)+1),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
-        this.pendingUsage={identity:this.host.identity(),id:this.last.id,stamps:[...this.last.stamps]};
-        this.rememberUsage(this.last);
-        this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；記錄可在「本次取用」查看');
+        this.pendingUsage={identity:this.host.identity(),id:this.last.id,stamps:[...this.last.stamps],objects:[...(this.host.context().chat??[])],trace:structuredClone(this.last),type:this.last.type??body.type};
+        this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；收到角色回覆後保存取用紀錄');
     }
     async preview(query='') {
         if(this.generating)throw new Error('請等這次正文生成完成後再試跑');
@@ -576,5 +595,5 @@ export class Engine {
         }catch(e){if(this.connectionTests[role]===pending)this.connectionTests[role]=controller.signal.aborted?null:{ok:false,error:String(e.message??e)};}
         finally{if(this.selectController===controller)this.selectController=null;this.emit();this.schedule();}
     }
-    dispose() { this.disposed=true;clearTimeout(this.timer);this.cancel();this.embedder.stop();this.cache.close(); }
+    dispose() { this.disposed=true;clearTimeout(this.timer);this.cancel({forgetPending:true});this.embedder.stop();this.cache.close(); }
 }

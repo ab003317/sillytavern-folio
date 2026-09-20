@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mergeUsage,usageView,USAGE_LIMIT,usageOverview,playerOwner} from '../src/usage.js';
+import {mergeUsage,usageView,USAGE_LIMIT,usageOverview,playerOwner,RESPONSE_KEY} from '../src/usage.js';
 
 test('body overview never counts player-only matches as a successful recall',()=>{
     const record={items:[{role:'user',index:0,final:true},{role:'assistant',index:1,final:false},{role:'assistant',index:3,final:true,recent:true}],candidates:[{index:1,selected:true}],skipped:[]};
@@ -32,4 +32,25 @@ test('only a uniquely present generated response is active; legacy receipts infe
     const legacy={...record('legacy',1),stamps:['question'],items:[]};
     const view=usageView([exact,deleted,legacy],['question','reply'],['user','assistant']);
     assert.deepEqual(view.map(x=>x.resultState),['present','missing','present']);assert.deepEqual(view.map(x=>x.resultIndex),[1,null,1]);
+});
+
+test('late unbound copies cannot downgrade a response-bound receipt with the same request timestamp',()=>{
+    const pending=record('one'),bound={...pending,result:{sourceStamp:'reply',boundAt:5}};
+    assert.deepEqual(mergeUsage([pending],[bound])[0].result,bound.result);
+    assert.deepEqual(mergeUsage([bound],[pending])[0].result,bound.result);
+});
+
+test('copied reply IDs are ambiguous rather than matched by a shifted floor number',()=>{
+    const receipt={...record('one'),result:{messageId:'same',swipeId:0,sourceStamp:'old'}};
+    const chat=[{extra:{[RESPONSE_KEY]:'same'}},{extra:{[RESPONSE_KEY]:'same'}}];
+    assert.equal(usageView([receipt],['new','new'],['assistant','assistant'],chat)[0].resultState,'ambiguous');
+    chat[1].swipe_id=1;const view=usageView([receipt],['new','new'],['assistant','assistant'],chat)[0];
+    assert.equal(view.resultState,'present');assert.equal(view.resultIndex,0);
+});
+
+test('legacy failed requests cannot evict a proven bound receipt or all claim the same later reply',()=>{
+    const bound={...record('bound',1),result:{sourceStamp:'reply'}};
+    const pending=Array.from({length:25},(_,i)=>({...record('pending-'+i,i+2),stamps:['question']}));
+    assert.ok(mergeUsage(pending,[bound]).some(r=>r.id==='bound'));
+    assert.ok(usageView(pending,['question','reply'],['user','assistant']).every(r=>r.resultState==='unbound'));
 });

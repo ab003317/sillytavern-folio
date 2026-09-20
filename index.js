@@ -24,9 +24,11 @@ async function initialize() {
 const events = context.eventTypes;
 on(events.APP_READY ?? events.APP_INITIALIZED, initialize);
 for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_SENT']) on(events[name],()=>engine.changed());
-on(events.MESSAGE_SWIPED,()=>{engine.newResponse({replacement:true});engine.changed();});
+// Navigating an existing swipe is not a newly generated reply. Actual regenerated
+// variants arrive through MESSAGE_RECEIVED with type='swipe'.
+on(events.MESSAGE_SWIPED,()=>engine.changed());
 on(events.MESSAGE_DELETED,()=>engine.changed({deleted:true}));
-for (const name of ['MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED']) on(events[name],()=>engine.newResponse());
+for (const name of ['MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED']) on(events[name],(messageId,type)=>engine.newResponse({messageId,type}));
 on(events.USER_MESSAGE_RENDERED,()=>{engine.emit();engine.schedule();});
 on(events.GENERATION_STARTED,(type,options,dryRun)=>engine.generationStarted(type,options,dryRun));
 on(events.GENERATION_ENDED,()=>engine.generationEnded());

@@ -2,6 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Host,helperPayload,completionText} from '../src/host.js';
 
+test('journal backup is scoped to the captured chat and preserves unrelated chat metadata',async()=>{
+    let saves=0;const c={chat:[],chatMetadata:{other:'keep'},saveChat:async()=>{saves++;}};
+    const h=new Host(()=>c);let identity='a';h.identity=()=>identity;
+    const record={id:'receipt',stage:'observed',receiptVersion:2,result:{messageId:'reply'},final:{observedAt:1},items:[]};
+    const ticket=h.stageUsage('a',[record]);assert.equal(c.chatMetadata.other,'keep');assert.equal(h.readUsage()[0].id,'receipt');
+    record.items.push({body:'later mutation'});assert.equal(h.readUsage()[0].items.length,0);
+    identity='b';await h.flushUsage(ticket);assert.equal(saves,0);
+    identity='a';const oldChat=c.chat;c.chat=[];await h.flushUsage(ticket);assert.equal(saves,0);
+    c.chat=oldChat;await h.flushUsage(ticket);assert.equal(saves,1);
+    assert.equal(h.stageUsage('a',h.readUsage()),null,'Identical journal must not rewrite chat on every refresh');
+});
+
 test('known DeepSeek Flash/Pro helper disables thinking through custom backend passthrough',()=>{
     for(const model of ['deepseek-flash','deepseek-pro','deepseek-v4-flash','deepseek/deepseek-v4-pro'])assert.deepEqual(JSON.parse(helperPayload(model).custom_include_body),{thinking:{type:'disabled'}});
     assert.equal(helperPayload('other-mini').custom_include_body,undefined);

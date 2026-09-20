@@ -1,6 +1,7 @@
 import { estimatedTokens } from './core.js';
 import { PROVIDERS, directConfig, providerRequest, modelIds, apiError } from './providers.js';
 import { memoryOptions, generationOptions, rolePrompt, checkContext } from './settings.js';
+import {mergeUsage,USAGE_KEY} from './usage.js';
 export const MODEL_ROLES = {summary:'總結模型',selection:'提取模型'};
 
 export function helperPayload(model) {
@@ -282,6 +283,19 @@ export class Host {
             if (controller.signal.aborted) throw controller.signal.reason;
             throw error;
         } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+    }
+    readUsage(){const records=this.context().chatMetadata?.[USAGE_KEY]?.records;return Array.isArray(records)?records:[];}
+    stageUsage(identity,records){
+        const c=this.context();if(!identity||identity!==this.identity()||!c.chatMetadata||!records.length)return null;
+        const merged=mergeUsage(records,this.readUsage());
+        if(JSON.stringify(merged)===JSON.stringify(this.readUsage()))return null;
+        c.chatMetadata[USAGE_KEY]={version:1,records:structuredClone(merged)};
+        // Stage synchronously so the host's normal reply save includes the journal.
+        return {identity,chat:c.chat,metadata:c.chatMetadata};
+    }
+    async flushUsage(ticket){
+        const c=this.context();
+        if(ticket&&ticket.identity===this.identity()&&ticket.chat===c.chat&&ticket.metadata===c.chatMetadata)await c.saveChat();
     }
     async save() { await this.context().saveChat(); }
 }

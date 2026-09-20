@@ -808,7 +808,7 @@ test('legacy observed trace migrates even after a source deletion, while unobser
 test('request-ready receipt stays hidden until a response is attached, and a swipe binds the replacement floor',async()=>{
     const r=rig([message('問題',0,true)]);r.engine.changed();const core=structuredClone(r.c.chat);
     await r.engine.intercept(core,10000,()=>{},'normal');r.engine.captureFinal({type:'normal',messages:[{role:'user',content:'問題'}]});
-    assert.equal(r.engine.snapshot().usages.length,0);assert.equal(r.engine.snapshot().usageStoredCount,1);
+    assert.equal(r.engine.snapshot().usages.length,0);assert.equal(r.engine.snapshot().usageStoredCount,0,'A request without a reply must not consume a journal slot');
     r.c.chat.push(message('第一個回覆',1));r.engine.responseReceived();await r.engine.usageWrite;assert.equal(r.engine.snapshot().usages.length,1);
     r.c.chat.push(message('再生成',2,true));r.engine.changed();const swipeCore=structuredClone(r.c.chat);await r.engine.intercept(swipeCore,10000,()=>{},'normal');
     r.engine.captureFinal({type:'normal',messages:swipeCore.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
@@ -825,4 +825,86 @@ test('failed journal storage is visible without blocking send, then next write r
 test('rebuilding summaries preserves sent journal and recorded bodies',async()=>{
     const r=rig();ready(r);r.engine.changed();const first=await sent(r);await r.engine.refreshAll();await r.engine.tick();await r.engine.tick();
     assert.equal(r.engine.snapshot().usages[0].id,first.id);assert.equal(r.engine.snapshot().usages[0].items[0].body,first.items[0].body);
+});
+
+test('editing or hiding a surviving reply does not erase its latest usage, including reload',async()=>{
+    const r=rig();const first=await sent(r);r.c.chat.at(-1).mes+='（玩家修正文句）';r.c.chat.at(-1).is_system=true;r.engine.changed();
+    assert.equal(r.engine.snapshot().usages[0]?.id,first.id);
+    const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();
+    assert.equal(reopened.snapshot().usages[0]?.id,first.id);
+});
+
+test('continue replaces content and timestamp in place but binds the same surviving floor',async()=>{
+    const r=rig();const first=await sent(r),core=structuredClone(r.c.chat);
+    await r.engine.intercept(core,10000,()=>assert.fail('abort'),'continue');
+    r.engine.captureFinal({type:'continue',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+    const id=r.engine.last.id;r.c.chat.at(-1).mes+='續寫正文';r.c.chat.at(-1).send_date='continued';
+    r.engine.newResponse({messageId:r.c.chat.length-1,type:'continue'});await r.engine.usageWrite;
+    assert.equal(r.engine.snapshot().usages[0]?.id,id);assert.equal(r.engine.snapshot().usages.length,2);
+    r.c.chat.pop();r.engine.changed({deleted:true});assert.equal(r.engine.snapshot().usages.length,0);
+    assert.notEqual(first.id,id);
+});
+
+test('failed requests cannot evict the last successful receipt from the bounded journal',async()=>{
+    const r=rig();const first=await sent(r);
+    for(let i=0;i<25;i++){
+        const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');
+        r.engine.captureFinal({type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+        await r.engine.generationEnded();
+    }
+    await r.engine.usageWrite;assert.equal(r.engine.snapshot().usages[0]?.id,first.id);
+    assert.equal((await r.cache.get('records','usage:a')).length,1);
+});
+
+test('native swipe event binds a new variant and navigation restores the old variant receipt',async()=>{
+    const r=rig([message('問題',0,true)]);const first=await sent(r),old=structuredClone(r.c.chat.at(-1)),reply=r.c.chat.at(-1);
+    const core=structuredClone(r.c.chat.slice(0,-1));await r.engine.intercept(core,10000,()=>{},'swipe');
+    r.engine.captureFinal({type:'swipe',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+    const id=r.engine.last.id;reply.swipe_id=1;reply.mes='新候選回覆';reply.send_date='new-swipe';
+    r.engine.newResponse({messageId:r.c.chat.length-1,type:'swipe'});await r.engine.usageWrite;
+    assert.equal(r.engine.snapshot().usages[0].id,id);assert.equal(r.engine.snapshot().usages.length,1);
+    assert.ok(r.engine.autoPages.has(reply),'Actual regenerated reply must enter auto-memory');
+    const next=structuredClone(reply);Object.keys(reply).forEach(k=>delete reply[k]);Object.assign(reply,old);r.engine.changed();
+    assert.equal(r.engine.snapshot().usages[0].id,first.id);
+    Object.assign(reply,next);r.engine.changed();assert.equal(r.engine.snapshot().usages[0].id,id);
+});
+
+test('ordinary UI cancellation after send does not lose the eventual reply association',async()=>{
+    const r=rig();const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');
+    r.engine.captureFinal({type:'normal',messages:core.map(m=>({role:'assistant',content:m.mes}))});
+    const id=r.engine.last.id;r.engine.toggle(false);r.c.chat.push(message('仍然回來的正文',8));r.engine.newResponse({messageId:1,type:'normal'});
+    await r.engine.usageWrite;assert.equal(r.engine.snapshot().usages[0].id,id);
+});
+
+test('generation end binds a finished reply if the receive notification was missed',async()=>{
+    const r=rig();const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');
+    r.engine.captureFinal({type:'normal',messages:core.map(m=>({role:'assistant',content:m.mes}))});
+    const id=r.engine.last.id;r.c.chat.push(message('收到但未通知',2));await r.engine.generationEnded();await r.engine.usageWrite;
+    assert.equal(r.engine.snapshot().usages[0].id,id);
+});
+
+test('empty failed stream and cancelled chat switch never bind an unrelated later reply',async()=>{
+    const r=rig();const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>{},'normal');
+    r.engine.captureFinal({type:'normal',messages:core.map(m=>({role:'assistant',content:m.mes}))});
+    r.c.chat.push(message('',2));await r.engine.generationEnded();r.c.chat.at(-1).mes='手動補字';r.engine.newResponse();
+    assert.equal(r.engine.snapshot().usages.length,0);
+    await r.engine.intercept(structuredClone(r.c.chat),10000,()=>{},'normal');r.engine.captureFinal({type:'normal',messages:[]});
+    r.c.chatId='b';r.engine.changed();r.c.chat.push(message('另一個聊天',5));r.engine.newResponse();assert.equal(r.engine.snapshot().usages.length,0);
+});
+
+test('chat backup restores receipts even if the browser journal is missing or unreadable',async()=>{
+    const r=rig();const first=await sent(r);const backup=structuredClone(r.engine.usages);
+    r.host.readUsage=()=>backup;const cache=new MemoryCache();cache.get=async()=>{throw Error('storage unavailable');};
+    const reopened=new Engine(r.host,cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();
+    assert.equal(reopened.snapshot().usages[0].id,first.id);assert.equal(reopened.snapshot().usageLoading,false);
+    assert.match(reopened.snapshot().usageError,/已顯示聊天/);
+});
+
+test('legacy exact binding upgrades to a persistent reply ID; already missing old bindings stay inspectable',async()=>{
+    const r=rig();const first=await sent(r);const legacy=structuredClone(first);delete legacy.result.messageId;delete legacy.result.swipeId;delete legacy.receiptVersion;
+    const missing={...structuredClone(legacy),id:'missing-old',result:{sourceStamp:'never-found'},final:{observedAt:0}};
+    await r.cache.put('records','usage:a',[legacy,missing]);await r.cache.put('records','trace:a',null);
+    const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();await reopened.usageWrite;
+    assert.ok(reopened.snapshot().usages[0].result.messageId);assert.equal(reopened.snapshot().usageArchive[0].id,'missing-old');
+    r.c.chat.at(-1).mes+=' changed';reopened.changed();assert.equal(reopened.snapshot().usages[0].id,first.id);
 });

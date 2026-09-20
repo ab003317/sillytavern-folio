@@ -19,11 +19,11 @@ const chat=Array.from({length:7},(_,i)=>({name:i%2?'船長':'玩家',is_user:i%2
  '我還欠船長什麼約定？'
  ][i],extra:{}}));
 const saved=localStorage.getItem('folio-fixture-chat');if(saved)chat.splice(0,chat.length,...JSON.parse(saved));
-window.testContext={chat,chatId:'fictional-fixture',characterId:0,characters:[{avatar:'synthetic.png'}],groupId:null,chatMetadata:{},mainApi:'openai',
+window.testContext={chat,chatId:'fictional-fixture',characterId:0,characters:[{avatar:'synthetic.png'}],groupId:null,chatMetadata:JSON.parse(localStorage.getItem('folio-fixture-metadata')||'{}'),mainApi:'openai',
  extensionSettings:JSON.parse(localStorage.getItem('folio-fixture-settings')||'{"folio":{"enabled":true,"account":"fixture","helperConnection":"current","helperModel":"fixture-mini"}}'),eventSource:events,eventTypes,
  chatCompletionSettings:{chat_completion_source:'custom',custom_model:'fixture-large',custom_url:'https://existing-provider.invalid/v1',openai_max_tokens:2000,stream_openai:true},
  isGenerating:()=>!!window.fixtureGenerating,getRequestHeaders:()=>({'Content-Type':'application/json'}),getTokenCountAsync:async(text)=>Math.ceil(text.length*1.5),
- saveChat:async()=>{window.saves++;localStorage.setItem('folio-fixture-chat',JSON.stringify(chat));},
+ saveChat:async()=>{window.saves++;localStorage.setItem('folio-fixture-chat',JSON.stringify(chat));localStorage.setItem('folio-fixture-metadata',JSON.stringify(testContext.chatMetadata));},
  saveSettings:async()=>localStorage.setItem('folio-fixture-settings',JSON.stringify(testContext.extensionSettings)),
  saveSettingsDebounced:()=>localStorage.setItem('folio-fixture-settings',JSON.stringify(testContext.extensionSettings))};
 // Model the server readback separately from the mutable in-page settings object.

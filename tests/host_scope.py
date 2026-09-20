@@ -69,7 +69,7 @@ with sync_playwright() as p:
           const {mountUI}=await import(prefix+'src/ui.js'),{bookPages,newRecord,KEY}=await import(prefix+'src/core.js');
           const chat=['合成驗收隱藏玩家','合成驗收隱藏信件正文','合成驗收近期玩家','合成驗收近期正文','合成驗收詢問信件'].map((mes,i)=>({mes,is_user:i%2===0,is_system:i<2,name:i%2?'船長':'玩家',send_date:'scope-'+i,extra:{}}));
           const last=bookPages(chat)[1],record=newRecord(last.message,last.playerInput);Object.assign(record,{done:true,summary:'合成驗收人工目錄',edited:true});last.message.extra[KEY]=record;
-          const fixture={...real,chat,chatId:'scope-only',mainApi:'openai',isGenerating:()=>false,extensionSettings:{folio:{enabled:true,account:'scope-only',apiMode:'main',memory:{recentPages:1}}},saveChat:async()=>{},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>text.length};
+          const fixture={...real,chat,chatMetadata:{},chatId:'scope-only',mainApi:'openai',isGenerating:()=>false,extensionSettings:{folio:{enabled:true,account:'scope-only',apiMode:'main',memory:{recentPages:1}}},saveChat:async()=>{},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>text.length};
           const host=new Host(()=>fixture),cache=new Cache('scope-only'),embedder={embed:async texts=>texts.map(()=>[1,0]),stop(){}};
           const t={real,before,settings,chat,host,cache,embedder,calls:0,previous:window.folioIntercept,preserved:JSON.stringify(last.message)};window.scopeTest=t;
           host.complete=async(_s,_p,options)=>{if(options.selection)return '{"ids":["p1"]}';t.calls++;return '{"summary":"合成驗收新目錄"}';};
