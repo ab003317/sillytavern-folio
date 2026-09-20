@@ -45,9 +45,9 @@ with sync_playwright() as p:
           await testContext.saveChat();await events.emit('CHAT_CHANGED');
         }""")
         switch=page.get_by_role('switch',name='新回覆自動記憶');assert switch.is_checked()==False
-        assert page.locator('.folio-toggle-state').inner_text()=='已關閉'
+        assert page.locator('.folio-top .folio-toggle-state').inner_text()=='已關閉'
         switch.focus();page.keyboard.press('Space');assert switch.is_checked()
-        assert page.locator('.folio-toggle-state').inner_text()=='已開啟'
+        assert page.locator('.folio-top .folio-toggle-state').inner_text()=='已開啟'
         # Enabling automatic memory must not index or summarize the already-open old chat.
         page.get_by_role('tab',name='運行',exact=True).click()
         page.wait_for_timeout(2200)

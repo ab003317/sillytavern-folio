@@ -54,7 +54,7 @@ with sync_playwright() as p:
         assert page.get_by_role('progressbar',name='摘要目錄',exact=True).is_visible()
         switch=page.get_by_role('switch',name='新回覆自動記憶',exact=True)
         assert not switch.is_checked()
-        assert page.locator('.folio-toggle-state').inner_text()=='已關閉'
+        assert page.locator('.folio-top .folio-toggle-state').inner_text()=='已關閉'
         page.evaluate("async()=>{const c=SillyTavern.getContext();await c.eventSource.emit(c.eventTypes.GENERATION_STARTED,'normal',{},true);await c.eventSource.emit(c.eventTypes.GENERATION_STARTED,'quiet',{},false);}")
         assert '目前正在生成回覆' not in page.locator('#folio-view-run .folio-rebuild').inner_text()
         native_state=page.evaluate("""async prefix=>{const {Host}=await import(prefix+'src/host.js'),api=await import('/script.js'),h=new Host();api.deactivateSendButtons();const busy=await h.generationActive();api.activateSendButtons();const idle=await h.generationActive();return {busy,idle};}""",PREFIX)
