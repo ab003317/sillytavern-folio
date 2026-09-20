@@ -20,6 +20,27 @@ test('fresh installation follows the live main model for both roles and preserve
     }finally{globalThis.fetch=old;}
 });
 
+test('saving dormant direct or profile settings leaves main mode, active model and keys intact',()=>{
+    const {host,c}=fixture();host.models.summary='main-a';
+    host.configureDirect('summary',{provider:'custom',baseUrl:'https://fixture.invalid/v1',model:'private-model',apiKey:'fixture-only-key'},{activate:false});
+    host.configureHelper('selection','current','private-selection',{activate:false});
+    assert.equal(host.settings().apiMode,'main');assert.equal(host.helper('summary').model,'main-a');assert.equal(host.models.summary,'main-a');
+    assert.equal(host.helperStatus('selection').model,'main-a');assert.match(host.helperStatus('summary').label,/酒館主 API/);
+    host.configureApiMode('separate');assert.equal(host.helperStatus('summary').model,'private-model');assert.match(host.helperStatus('summary').label,/獨立 API/);
+    assert.equal(host.helperStatus('selection').model,'private-selection');assert.match(host.helperStatus('selection').label,/模型獨立指定/);
+    assert.ok(!JSON.stringify(host.helperStatus('summary')).includes('fixture-only-key'));
+    host.configureApiMode('main');assert.equal(host.settings().helpers.summary.apiKey,'fixture-only-key');
+    c.chatCompletionSettings.custom_model='main-b';assert.equal(host.helperStatus('selection').model,'main-b');
+});
+
+test('effective connection status flags incomplete and deleted profiles, not successful historical tests',()=>{
+    const {host,c}=fixture();host.configureApiMode('separate');host.settings().helpers.summary={connection:'current',model:''};
+    assert.equal(host.helperStatus().ready,false);assert.match(host.helperStatus().issue,/模型/);
+    host.settings().helpers.summary={connection:'gone',model:'missing-profile-model'};assert.match(host.helperStatus().issue,/不存在/);
+    c.ConnectionManagerRequestService={getSupportedProfiles:()=>[{id:'gone',name:'Recovered',model:'x'}]};assert.equal(host.helperStatus().ready,true);assert.match(host.helperStatus().label,/Recovered/);
+    host.configureApiMode('main');c.mainApi='textgenerationwebui';assert.equal(host.helperStatus().ready,false);
+});
+
 test('generation adapter uses live host state, native preparation state, and returns unknown for unsupported hosts',async()=>{
     const {host,c}=fixture(),documentBefore=globalThis.document;
     try{

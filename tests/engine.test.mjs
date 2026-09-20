@@ -190,6 +190,26 @@ test('hidden unfinished, tool/media, removed swipe and typed notices cannot be r
     const outgoing=structuredClone([r.c.chat[2]]);await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'swipe');assert.equal(outgoing.length,1);
 });
 
+test('mode switch while checking host state cancels helper test before a request is made',async()=>{
+    const r=rig();let release;r.host.generationActive=()=>new Promise(resolve=>{release=resolve;});
+    const pending=r.engine.testHelper('summary');r.engine.cancel();r.engine.connectionTests={summary:null,selection:null};release(false);await pending;
+    assert.equal(r.stats().calls,0);assert.equal(r.engine.connectionTests.summary,null);
+});
+
+test('late helper test cannot replace results after switching connection mode',async()=>{
+    const r=rig();let finish;r.host.complete=()=>new Promise(resolve=>{finish=resolve;});
+    const pending=r.engine.testHelper('summary');await new Promise(resolve=>setTimeout(resolve,0));assert.ok(finish);
+    r.engine.cancel();r.engine.connectionTests={summary:null,selection:null};finish('{"summary":"old provider reply"}');await pending;
+    assert.equal(r.engine.connectionTests.summary,null);
+});
+
+test('cancelled helper test does not overwrite a newer pending test',async()=>{
+    const r=rig(),resolvers=[];r.host.complete=()=>new Promise(resolve=>resolvers.push(resolve));
+    const first=r.engine.testHelper('summary');await new Promise(resolve=>setTimeout(resolve,0));const second=r.engine.testHelper('summary');await new Promise(resolve=>setTimeout(resolve,0));
+    const pending=r.engine.connectionTests.summary;resolvers[0]('{"summary":"old"}');await first;assert.equal(r.engine.connectionTests.summary,pending);
+    resolvers[1]('{"summary":"new"}');await second;assert.equal(r.engine.connectionTests.summary.summary,'new');
+});
+
 test('duplicate click does not enqueue a second rebuild or multiply API cost',async()=>{
     const r=rig();ready(r);await r.engine.refreshAll();await assert.rejects(r.engine.refreshAll(),/已有重整任務/);
     await r.engine.tick();await r.engine.tick();assert.equal(r.stats().calls,1);

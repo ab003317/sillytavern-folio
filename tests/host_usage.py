@@ -60,7 +60,18 @@ with sync_playwright() as p:
         native_state=page.evaluate("""async prefix=>{const {Host}=await import(prefix+'src/host.js'),api=await import('/script.js'),h=new Host();api.deactivateSendButtons();const busy=await h.generationActive();api.activateSendButtons();const idle=await h.generationActive();return {busy,idle};}""",PREFIX)
         assert native_state=={'busy':True,'idle':False},native_state
         page.get_by_role('tab',name='記憶助手',exact=True).click()
-        assert page.get_by_role('button',name='已使用酒館主 API',exact=True).is_visible()
+        assert page.get_by_role('switch',name='使用獨立 API',exact=True).is_visible()
+        assert not page.get_by_role('switch',name='使用獨立 API',exact=True).is_checked()
+        assert page.locator('.folio-api-current').inner_text()=='目前生效：酒館主 API'
+        current_before=page.evaluate('JSON.stringify(SillyTavern.getContext().chatCompletionSettings)')
+        api_switch=page.get_by_role('switch',name='使用獨立 API',exact=True)
+        api_switch.check()
+        assert page.locator('.folio-api-current').inner_text()=='目前生效：獨立 API 設定'
+        assert page.locator('.folio-active-model').count()==2
+        api_switch.uncheck()
+        assert page.locator('.folio-api-current').inner_text()=='目前生效：酒館主 API'
+        assert page.evaluate('JSON.stringify(SillyTavern.getContext().chatCompletionSettings)')==current_before
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
         assert not page.locator('#folio-summary-source').is_visible()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-tiers-main-desktop.png'))
         page.set_viewport_size({'width':390,'height':844});page.locator('.folio-dialog').screenshot(path=str(OUT/'lan-tiers-main-mobile.png'))

@@ -89,18 +89,25 @@ export class Host {
         return {profile,connection:config.connection,model:config.model.trim(),label:config.connection==='direct'?(PROVIDERS[config.provider]?.label??'自訂接口'):profile?.name||'目前聊天連線',role,
             provider:config.provider??'',baseUrl:config.baseUrl??'',hasKey:!!config.apiKey};
     }
-    configureHelper(role,connection,model='') {
+    helperStatus(role='summary') {
+        const h=this.helper(role),c=this.context(),source=c.chatCompletionSettings?.chat_completion_source;
+        const provider=PROVIDERS[source==='makersuite'?'google':source]?.label||source||'未選來源';
+        const label=h.connection==='main'?`酒館主 API · ${provider}`:h.connection==='current'?`酒館目前連線 · ${provider}（模型獨立指定）`:h.connection==='direct'?`獨立 API · ${h.label}`:`酒館連線檔 · ${h.label}`;
+        const issue=!h.model?'尚未填寫模型':h.connection==='direct'?(!h.baseUrl?'尚未填寫 API 網址':''):!['main','current'].includes(h.connection)&&!h.profile?'原連線已不存在':c.mainApi!=='openai'?'主連線不是聊天補全模式':'';
+        return {connection:h.connection,label,model:h.model,endpoint:h.connection==='direct'?h.baseUrl:'',ready:!issue,issue};
+    }
+    configureHelper(role,connection,model='',{activate=true}={}) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
         if(!model.trim())throw new Error(`請填寫${MODEL_ROLES[role]}名稱`);
         if(connection!=='current'&&!this.profiles().some(p=>p.id===connection))throw new Error('連線已不存在，請重新選擇');
         this.settings().helpers[role]={connection,model:model.trim()};
-        this.settings().apiMode='separate';
+        if(activate)this.settings().apiMode='separate';
         this.rejected.clear();this.context().saveSettingsDebounced();
     }
-    configureDirect(role,input) {
+    configureDirect(role,input,{activate=true}={}) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
         const config=directConfig(input,this.settings().helpers[role]);
-        this.settings().helpers[role]=config;this.settings().apiMode='separate';this.models[role]='';this.context().saveSettingsDebounced();
+        this.settings().helpers[role]=config;if(activate)this.settings().apiMode='separate';if(this.settings().apiMode==='separate')this.models[role]='';this.context().saveSettingsDebounced();
     }
     configureApiMode(mode){if(!['main','separate'].includes(mode))throw new Error('請選擇 API 方案');this.settings().apiMode=mode;this.models={summary:'',selection:''};this.context().saveSettingsDebounced();}
     memory(){return memoryOptions(this.settings().memory);}

@@ -99,7 +99,7 @@ export class Engine {
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
             resetting:this.resetting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
             usages:usageRecords,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
-            apiMode:this.host.settings().apiMode??'main',mainModel:this.host.helper?.('summary')?.model??'',memory:this.host.memory?.(),advanced:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.advanced?.(role)])),
+            apiMode:this.host.settings().apiMode??'main',mainModel:this.host.helper?.('summary')?.model??'',activeHelpers:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.helperStatus?.(role)])),memory:this.host.memory?.(),advanced:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.advanced?.(role)])),
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
     }
     emit() { this.notify(this.snapshot()); }
@@ -515,17 +515,19 @@ export class Engine {
     }
     async testHelper(role='summary') {
         if(!['summary','selection'].includes(role))throw new Error('未知模型用途');
+        const epoch=this.epoch;
         await this.reconcileGeneration();
+        if(this.disposed||epoch!==this.epoch)return;
         if(this.generating)throw new Error('請等正文生成完成後再測試');
         this.controller?.abort();this.selectController?.abort();const controller=new AbortController();this.selectController=controller;
-        const start=performance.now(),selection=role==='selection';this.connectionTests[role]={pending:true};this.emit();
+        const start=performance.now(),selection=role==='selection',pending={pending:true};this.connectionTests[role]=pending;this.emit();
         try{
             const catalogue=[{id:'letter',summary:'船長交付藍色信件，約定冬天前送到山城。'},{id:'dinner',summary:'旅人在街市吃了一碗牛肉麵。'}];
             const input=selection?{query:'連線測試：船長的信應在甚麼時候送到哪裡？',catalogue}:{speaker:'連線測試',playerInput:'請保存信件。',text:'船長將藍色信件交給旅人，約定冬天前送到山城。'};
             const raw=await this.host.complete(selection?SELECT_SYSTEM:SUMMARY_SYSTEM,JSON.stringify(input),{signal:controller.signal,selection});controller.signal.throwIfAborted();
             let parsed;if(selection){const ids=parseSelection(raw,catalogue);if(!ids.includes('letter')||ids.includes('dinner'))throw new Error('模型有回應，但未通過提取測試：應選信件，不應選晚餐');parsed={summary:'成功從兩段小摘要選出信件正文。',ids};}else parsed=parsePageSummary(raw);
-            this.connectionTests[role]={ok:true,model:this.host.models?.[role]??this.host.model,ms:Math.round(performance.now()-start),...parsed};
-        }catch(e){this.connectionTests[role]={ok:false,error:String(e.message??e)};}
+            if(this.connectionTests[role]===pending)this.connectionTests[role]={ok:true,model:this.host.models?.[role]??this.host.model,ms:Math.round(performance.now()-start),...parsed};
+        }catch(e){if(this.connectionTests[role]===pending)this.connectionTests[role]=controller.signal.aborted?null:{ok:false,error:String(e.message??e)};}
         finally{if(this.selectController===controller)this.selectController=null;this.emit();this.schedule();}
     }
     dispose() { this.disposed=true;clearTimeout(this.timer);this.cancel();this.embedder.stop();this.cache.close(); }

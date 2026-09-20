@@ -35,7 +35,9 @@ with sync_playwright() as p:
         page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
         page.goto('http://folio.test/tests/fixture.html');page.wait_for_function('window.fixtureReady===true')
         page.locator('#folio-wand').click();page.get_by_role('tab',name='記憶助手',exact=True).click()
-        assert page.get_by_role('button',name='已使用酒館主 API',exact=True).is_visible()
+        assert page.get_by_role('switch',name='使用獨立 API',exact=True).is_visible()
+        assert not page.get_by_role('switch',name='使用獨立 API',exact=True).is_checked()
+        assert page.locator('.folio-api-current').inner_text()=='目前生效：酒館主 API'
         assert not page.locator('#folio-summary-source').is_visible()
         assert not page.get_by_label('總結溫度',exact=True).is_visible()
         assert page.evaluate('testContext.extensionSettings.folio.apiMode')=='main'
