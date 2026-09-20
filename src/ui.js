@@ -167,10 +167,10 @@ export function mountUI(engine){
         if(!autoCompletion)autoPopup.hidden=true;
     }
     function renderRun(){
-        const intro=heading(state.rebuild?.pending?state.rebuildMode==='vectors'?'正在補齊本機向量':'正在重新整理書頁':state.enabled?'新回覆自動記，舊聊天由你決定':'新回覆自動記憶已暫停','自動開關只處理開啟後的新回覆。舊聊天可全部重做，或只補未完成的摘要／向量。刷新會恢復已保存的向量快取，不重做摘要。');
+        const intro=heading(state.rebuild?.pending?state.rebuildMode==='vectors'?'正在補齊本機向量':'正在重新整理書頁':state.enabled?'新回覆自動記，舊聊天由你決定':'新回覆自動記憶已暫停','自動開關只處理開啟後的新回覆。舊聊天摘要仍由你決定是否整理；已有摘要若缺本機向量，會用內建模型自動補齊，不重做摘要、不呼叫 API。');
         const dashboard=el('div','folio-dashboard'),meters=el('div','folio-meters');
-        meters.append(ring('摘要目錄',state.ready,state.total,'完成小摘要的正文頁數。提取模型讀目錄來選頁，選中後取回完整正文。'),ring('本機向量',state.indexed,state.total,'目前可用的正文頁向量。刷新／切聊天會自動讀取本瀏覽器快取；清除網站資料或換裝置後，可用「補齊本機向量」本地重建，不用重做摘要。','folio-meter-vector'));
-        meters.querySelector('.folio-meter-vector').append(el('p','folio-vector-state',state.vectorLoading?'正在恢復本機快取…':state.vectorMissing?`${state.vectorMissing} 頁待補向量 · 不呼叫 API`:state.summaryMissing?`${state.summaryMissing} 頁需先整理摘要`:'與摘要目錄同步'));
+        meters.append(ring('摘要目錄',state.ready,state.total,'完成小摘要的正文頁數。提取模型讀目錄來選頁，選中後取回完整正文。'),ring('本機向量',state.indexed,state.total,'目前可用的正文頁向量。刷新、換瀏覽器或清除網站資料後，已有摘要會用內建模型自動恢復或重建向量；不重做摘要、不呼叫 API。','folio-meter-vector'));
+        meters.querySelector('.folio-meter-vector').append(el('p','folio-vector-state',state.vectorLoading?'正在恢復／建立本機向量…':state.vectorMissing?`${state.vectorMissing} 頁待補向量 · 將自動重試`:state.summaryMissing?`${state.summaryMissing} 頁需先整理摘要`:'與摘要目錄同步'));
         const latest=state.usages?.[0],receipt=el('section','folio-recent');receipt.append(heading('最近取用（現存回覆）','只看仍在目前聊天裡的角色回覆。刪除最新回覆後，這裡會自動回到上一筆仍存在的舊取用。'),el('p','folio-recent-time',latest?dateStamp(latest.final.observedAt):state.usageLoading?'正在讀回取用紀錄…':'尚無對應現存回覆的紀錄'));
         if(latest){const counts=usageOverview(latest);receipt.append(el('p','folio-recent-count',`${counts.bodies} 頁正文 · ${counts.players} 則玩家背景`),el('p','folio-recall-count',`召回舊正文 ${counts.recalled} 頁 · 保留近期正文 ${counts.recent} 頁${counts.retained?` · 原歷史 ${counts.retained} 頁`:''}`),el('p','folio-recent-query',latest.query||'這次沒有新的玩家輸入'),el('p',!counts.bodies?'folio-usage-warning':'folio-muted',!counts.bodies?'這次未核對到任何正文；玩家背景不算正文取用。':latest.sourceChanged?'聊天已有變更；仍保留當時快照。':'已在酒館送出前核對完整內容。'));}
         else receipt.append(el('p','folio-muted','正常生成並保留角色回覆後，這裡會顯示它取用了哪些正文。'));
@@ -189,7 +189,7 @@ export function mountUI(engine){
             const b=button('',()=>{selected=e.ref;editing=false;renderPages();if(matchMedia('(max-width: 640px)').matches)reader.scrollIntoView({block:'start',behavior:'instant'});},'folio-page-link');
             b.setAttribute('aria-current',String(e.ref.handle===selected?.handle));b.dataset.index=String(e.index);
             const pendingLabel=e.automatic?`新回覆整理中：摘要 ${e.parts}/${e.totalParts} 段`:'舊聊天未整理；只會在手動重整時處理';
-            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.hidden?' · 隱藏正文':''}${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'尚無小摘要；正文已保留'),el('span','folio-page-state',e.rebuilding?e.ready?'正在補齊向量，保留已有摘要':e.previousSummary?'重整中，暫顯示舊摘要':`重整中：摘要 ${e.parts}/${e.totalParts} 段`:e.ready?e.indexed?'摘要與向量已就緒':state.vectorLoading?'摘要完成，正在恢復向量快取':'摘要完成，向量待補齊':pendingLabel));fragment.append(b);
+            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.hidden?' · 隱藏正文':''}${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'尚無小摘要；正文已保留'),el('span','folio-page-state',e.rebuilding?e.ready?'正在補齊向量，保留已有摘要':e.previousSummary?'重整中，暫顯示舊摘要':`重整中：摘要 ${e.parts}/${e.totalParts} 段`:e.ready?e.indexed?'摘要與向量已就緒':state.vectorLoading?'摘要完成，正在自動補向量':'摘要完成，向量等待重試':pendingLabel));fragment.append(b);
         }
         if(entries.length>shown)fragment.append(button('載入更多書頁',()=>{shown+=60;renderPages();}));
         if(!entries.length)fragment.append(el('p','folio-empty','沒有符合的書頁。開啟一段聊天，或換個詞搜尋。'));
@@ -267,7 +267,7 @@ export function mountUI(engine){
             f.missing.textContent=state.rebuildMode==='missing'&&working?working:'一鍵整理未整理的';
             f.vectors.textContent=state.rebuildMode==='vectors'&&working?working:'補齊本機向量';
             f.scope.textContent=`全部重做：${state.total} 頁　僅補未整理：${state.missing} 頁（缺摘要 ${state.summaryMissing} 頁、只缺向量 ${state.vectorMissing} 頁）`;
-            f.detail.textContent=(state.rebuildQueued?rebuildText():`包含 ${state.hidden} 頁隱藏正文，不含系統通知。全部重做會覆蓋摘要並呼叫 API；補未整理保留已有摘要，只為缺摘要的頁呼叫 API。補齊向量僅在本機運算。`)+(state.vectorLoading?'正在恢復本機快取，待補數量核對中。':'')+(state.generating&&!state.rebuildQueued?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':'');
+            f.detail.textContent=(state.rebuildQueued?rebuildText():`包含 ${state.hidden} 頁隱藏正文，不含系統通知。全部重做會覆蓋摘要並呼叫 API；補未整理保留已有摘要，只為缺摘要的頁呼叫 API。向量會自動在本機補齊，按鈕保留作手動重試。`)+(state.vectorLoading?'正在恢復／建立本機向量，待補數量核對中。':'')+(state.generating&&!state.rebuildQueued?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':'');
             f.stop.hidden=!(state.stopping||state.resetting||state.rebuildQueued||job?.pending);f.stop.disabled=!!state.stopping;f.stop.textContent=state.stopping?'正在停止…':state.stopFailed?'重試停止':state.rebuildQueued?'取消排隊':'停止本次重整';f.retry.hidden=state.stopFailed||state.stopping||!job?.pending||!state.warning;f.retry.disabled=state.busy;
             f.progress.hidden=state.rebuildQueued||(state.resetting&&!job?.pending)||!job;setRebuildProgress(f.progress,job);
             f.outcome.textContent=state.stopping||state.stopFailed?rebuildText(job):state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':state.resetting&&!job?.pending?'正在建立手動重新整理任務。':job?`本次${job.mode==='vectors'?'向量補齊':'重整'}：${job.mode==='vectors'?'':`摘要 ${job.done}/${job.total} 頁，`}向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已保留，向量尚待補齊，可按「補齊本機向量」。':job.cancelled?'已停止。':'已完成。'}`:'';

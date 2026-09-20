@@ -70,6 +70,15 @@ test('invalid advanced settings cannot replace saved values; reset restores defa
     const text='連續正文內容。'.repeat(1700),size=host.summaryChunkSize();assert.ok(size<3600);assert.equal(splitBody(text,size).join(''),text);
     host.configureAdvanced('summary',{});assert.equal(host.advanced('summary').prompt,'');assert.match(rolePrompt('summary',{},{}),/目錄編輯/);
 });
+test('default summaries are detailed retrieval cards instead of vague plot blurbs',()=>{
+    const memory=memoryOptions({}),prompt=rolePrompt('summary',{},memory);
+    assert.equal(memory.detail,'detailed');
+    assert.match(prompt,/180 至 350/);
+    assert.match(prompt,/人物與實體/);
+    assert.match(prompt,/事件與結果/);
+    assert.match(prompt,/目標與線索/);
+    assert.match(prompt,/不要用/);
+});
 test('recent page setting preserves paired input and still observes available budget',()=>{
     const chat=Array.from({length:10},(_,i)=>({is_user:i%2===0,mes:'正文'+i,name:'test'})),costs=chat.map(()=>10);
     assert.deepEqual([...recentPages(chat,costs,1000,2).picked].sort((a,b)=>a-b),[6,7,8,9]);

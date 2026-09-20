@@ -119,17 +119,26 @@ test('opening restores every valid cached vector, including hidden/recent pages,
     r.engine.dispose();
 });
 
-test('missing cache stays visibly unfinished on open; vector repair skips old unsummarized pages',async()=>{
+test('missing browser-local vectors rebuild automatically from completed summaries and skip unsummarized pages',async()=>{
     const r=rig([message('有效人工摘要',0),message('舊聊天尚無摘要',1)]);ready(r);delete r.c.chat[1].extra[KEY];
     r.c.chat[0].extra[KEY].edited=true;r.c.chat[0].extra[KEY].pinned=true;r.c.chat[0].is_system=true;
     const original=structuredClone(r.c.chat[0].extra[KEY]);r.embedder.cached=async()=>null;let embeddings=0;
     r.embedder.embed=async()=>{embeddings++;return [[1,0]];};r.host.helper=()=>({connection:'direct',model:''});
     r.c.mainApi='kobold';r.c.chatId='new-browser';r.engine.changed();await r.engine.tick();
-    assert.equal(embeddings,0);assert.deepEqual(r.stats(),{calls:0,saves:0});assert.equal(r.engine.snapshot().missing,2);
-    r.engine.toggle(false);await r.engine.repairVectors();assert.equal(r.engine.snapshot().rebuild.mode,'vectors');await r.engine.tick();
-    assert.equal(embeddings,1);assert.equal(r.stats().calls,0);assert.equal(r.engine.snapshot().vectorMissing,0);assert.equal(r.engine.snapshot().summaryMissing,1);
+    assert.equal(embeddings,1);assert.deepEqual(r.stats(),{calls:0,saves:0});assert.equal(r.engine.snapshot().missing,1);
+    assert.equal(r.engine.snapshot().vectorMissing,0);assert.equal(r.engine.snapshot().summaryMissing,1);
+    r.engine.toggle(false);await r.engine.repairVectors();await r.engine.tick();assert.equal(embeddings,1);
     for(const key of Object.keys(original))assert.deepEqual(r.c.chat[0].extra[KEY][key],original[key]);
     assert.equal(r.c.chat[1].extra[KEY],undefined);assert.equal(r.c.chat[0].is_system,true);assert.equal(r.host.settings().enabled,false);
+});
+
+test('selection waits for automatic vector hydration instead of silently using lexical-only candidates',async()=>{
+    const r=rig(Array.from({length:9},(_,i)=>message(`相關舊正文 ${i}`.repeat(40),i,i%2===0)));ready(r);r.engine.vectors.clear();
+    const calls=[];r.embedder.cached=async()=>null;r.embedder.embed=async(texts,_signal,query)=>{calls.push({texts:texts.length,query:!!query});return texts.map(()=>[1,0]);};
+    r.host.complete=async()=>'\u007b"ids":[]\u007d';r.c.chatId='automatic-vector-browser';r.engine.changed();
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,2000,()=>assert.fail('abort'),'normal');
+    assert.ok(calls.some(x=>!x.query),'completed summaries must receive document vectors');assert.ok(calls.some(x=>x.query),'the query must receive a query vector');
+    assert.ok(r.engine.last.candidates.some(x=>x.semantic>0));assert.equal(r.engine.snapshot().vectorMissing,0);assert.deepEqual(r.stats(),{calls:0,saves:0});
 });
 
 test('mixed missing job only pays for missing summaries, retaining vector-only page contents',async()=>{

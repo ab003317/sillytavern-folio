@@ -9,7 +9,7 @@ const invalidate=engine=>{engine.cancel();engine.warning='';engine.connectionTes
 
 export function mountMemoryOptions(engine,container,{el,button,info}){
     const section=fold(el,'摘要與取用設定'),advanced=fold(el,'進階容量限制',3),feedback=el('p','folio-api-feedback');feedback.setAttribute('role','status');
-    const inputs={detail:select(el,[['brief','精簡'],['standard','標準（預設）'],['detailed','詳細']]),focus:select(el,[['balanced','事件與人物兼顧'],['plot','劇情、因果與線索'],['relationships','人物關係與承諾']]),recentPages:numeric(el,{min:0,max:20,placeholder:'0：依上下文自動分配'}),recallPages:numeric(el,{min:1,max:8}),historyBudget:numeric(el,{min:0,max:200000,placeholder:'0：自動'})};
+    const inputs={detail:select(el,[['brief','精簡'],['standard','標準'],['detailed','詳細（預設）']]),focus:select(el,[['balanced','事件與人物兼顧'],['plot','劇情、因果與線索'],['relationships','人物關係與承諾']]),recentPages:numeric(el,{min:0,max:20,placeholder:'0：依上下文自動分配'}),recallPages:numeric(el,{min:1,max:8}),historyBudget:numeric(el,{min:0,max:200000,placeholder:'0：自動'})};
     section.append(el('p','folio-muted','調整摘要寫法、保留近期正文與舊事召回。預設自動分配；改摘要方式只影響接下來的整理，舊頁要按一鍵重新整理才更新。'));
     for(const [key,label,help] of [['detail','摘要詳略','每段摘要的目標長度：精簡 50–100 字、標準 80–180 字、詳細 180–350 字。'],['focus','摘要重點','只記錄已發生的事件；選項和玩家願望不會被當成事實。'],['recentPages','保留近期正文頁數','0 代表按上下文自動分配；1–20 為最多保留的近期角色回覆頁數，仍受容量限制，至少保留最新回合。'],['recallPages','每次最多召回舊正文','向量匹配與提取模型選回的舊正文上限。釘選頁另外計算，全部仍受容量限制。']])section.append(field(el,info,inputs[key],label,help));
     advanced.append(field(el,info,inputs.historyBudget,'歷史正文預算（tokens）','0 使用自動預算。自訂值可進一步限制記憶歷史容量；不覆寫酒館主聊天的總上下文或回覆設定。'));section.append(advanced);

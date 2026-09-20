@@ -1,4 +1,4 @@
-"""Actual repair clicks, persistent hydration, real local vectors and synthetic LLMs."""
+"""Automatic vector repair, persistent hydration, rebuild scope and synthetic LLMs."""
 import json
 import mimetypes
 import pathlib
@@ -55,9 +55,10 @@ with sync_playwright() as p:
         assert not calls
         page.locator('#folio-wand').click()
         run = page.locator('#folio-view-run')
+        page.wait_for_function("document.querySelector('[aria-label=本機向量]').getAttribute('aria-valuenow')==='1'", timeout=60000)
         assert '全部重做：3 頁' in run.inner_text()
-        assert '僅補未整理：3 頁（缺摘要 2 頁、只缺向量 1 頁）' in run.inner_text()
-        assert run.get_by_role('button', name='補齊本機向量', exact=True).is_enabled()
+        assert '僅補未整理：2 頁（缺摘要 2 頁、只缺向量 0 頁）' in run.inner_text()
+        assert run.get_by_role('button', name='補齊本機向量', exact=True).is_disabled()
         assert '包含 2 頁隱藏正文' in run.inner_text()
         missing = run.get_by_role('button', name='一鍵整理未整理的', exact=True)
         page.evaluate("events.emit('GENERATION_STARTED')")
@@ -73,7 +74,7 @@ with sync_playwright() as p:
         pages = page.locator('#folio-view-pages')
         pages.get_by_role('button', name='一鍵整理未整理的', exact=True).click()
         try:
-            page.wait_for_function("[...document.querySelectorAll('.folio-rebuild-status')].some(e=>e.textContent.includes('摘要 3/3')&&e.textContent.includes('向量 3/3')&&e.textContent.includes('已完成'))", timeout=60000)
+            page.wait_for_function("[...document.querySelectorAll('.folio-rebuild-status')].some(e=>e.textContent.includes('摘要 2/2')&&e.textContent.includes('向量 2/2')&&e.textContent.includes('已完成'))", timeout=60000)
         except Exception:
             print(json.dumps({'mockCalls': len(calls), 'status': page.locator('.folio-status').inner_text(), 'warning': page.locator('.folio-warning').all_text_contents(), 'progress': page.locator('.folio-rebuild-status').all_text_contents(), 'errors': errors}, ensure_ascii=True), flush=True)
             raise
@@ -110,28 +111,16 @@ with sync_playwright() as p:
         page.reload()
         page.wait_for_function('window.fixtureReady===true')
         page.locator('#folio-wand').click()
-        repair = run.get_by_role('button', name='補齊本機向量', exact=True)
-        repair.wait_for(state='visible')
-        page.wait_for_function("document.querySelector('#folio-view-run .folio-vector-repair').disabled===false")
-        assert '缺摘要 0 頁、只缺向量 3 頁' in run.inner_text()
-        assert run.get_by_role('button', name='一鍵整理未整理的', exact=True).is_enabled()
+        page.wait_for_function("document.querySelector('[aria-label=本機向量]').getAttribute('aria-valuenow')==='3'", timeout=60000)
+        assert '缺摘要 0 頁、只缺向量 0 頁' in run.inner_text()
+        assert run.get_by_role('button', name='補齊本機向量', exact=True).is_disabled()
+        assert run.get_by_role('button', name='一鍵整理未整理的', exact=True).is_disabled()
         page.get_by_role('tab', name='書頁目錄', exact=True).click()
         page.get_by_label('篩選書頁').select_option('pending')
-        assert page.locator('.folio-page-link').count() == 3
+        assert page.locator('.folio-page-link').count() == 0
         page.get_by_role('tab', name='運行', exact=True).click()
-        page.evaluate('window.fixtureGenerating=true')
-        repair.click()
-        assert '只補齊本機向量，不呼叫 API' in run.inner_text()
-        run.get_by_role('button', name='取消排隊', exact=True).click()
-        page.evaluate("events.emit('GENERATION_ENDED')")
-        assert len(calls) == 5
-        run.get_by_role('button', name='補齊本機向量', exact=True).click()
-        page.wait_for_function("document.querySelector('.folio-auto-popup-title').textContent==='正在補齊本機向量'")
-        assert run.get_by_role('button', name='停止本次重整', exact=True).is_visible()
-        page.wait_for_function("document.querySelector('[aria-label=本機向量]').getAttribute('aria-valuenow')==='3'", timeout=60000)
         assert page.evaluate('JSON.stringify(testContext.chat.map(m=>m.extra.folio_memory?.summary))') == before_repair
         assert len(calls) == 5
-        page.wait_for_function('document.querySelector(".folio-auto-popup").hidden', timeout=10000)
         page.locator('.folio-dialog').screenshot(path=str(OUT / 'vectors-repaired-mobile.png'))
         page.reload()
         page.wait_for_function('window.fixtureReady===true')
@@ -139,6 +128,6 @@ with sync_playwright() as p:
         page.wait_for_function("document.querySelector('[aria-label=本機向量]').getAttribute('aria-valuenow')==='3'")
         assert len(calls) == 5
         assert not errors, errors
-        print(json.dumps({'passed': True, 'missingCalls': 2, 'allCalls': 3, 'vectorRepairCalls': 0, 'realVectorsRestoredOnReload': 3, 'hiddenIncluded': True, 'manualSummaryPreservedByMissing': True, 'searchDoesNotLimitScope': True, 'vectorOnlyFilter': True, 'vectorQueueCancelled': True, 'reloadNoRepeat': True, 'browserErrors': errors}), flush=True)
+        print(json.dumps({'passed': True, 'missingCalls': 2, 'allCalls': 3, 'vectorRepairCalls': 0, 'automaticVectorRepair': True, 'realVectorsRestoredOnReload': 3, 'hiddenIncluded': True, 'manualSummaryPreservedByMissing': True, 'searchDoesNotLimitScope': True, 'pendingClearedAfterAutomaticRepair': True, 'reloadNoRepeat': True, 'browserErrors': errors}), flush=True)
     finally:
         browser.close()

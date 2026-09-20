@@ -17,29 +17,39 @@ export class Engine {
         this.stopFailures=new Set();
         this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.usageLoading=false;this.pendingUsage=null;
         this.autoPages=new Set();this.seenPages=new Set();this.indexPages=new Set();
-        this.vectorLoad=0;this.vectorLoading=false;this.vectorHydration=Promise.resolve();
+        this.vectorLoad=0;this.vectorLoading=false;this.vectorHydration=Promise.resolve();this.vectorHydrationIdentity='';
     }
     pages() { const identity=this.host.identity();return bookPages(this.host.context().chat ?? []).map(p=>({...p,identity})); }
     hasVector(record){return !!record?.done&&this.vectors.has(this.vectorKey(record));}
     loadVectors() {
-        const load=++this.vectorLoad,identity=this.host.identity(),pages=this.pages().filter(p=>p.record?.done&&!this.hasVector(p.record));
+        const identity=this.host.identity();
+        if(this.vectorLoading&&identity&&identity===this.vectorHydrationIdentity)return this.vectorHydration;
+        const load=++this.vectorLoad,pages=this.pages().filter(p=>p.record?.done&&!this.hasVector(p.record));
+        this.vectorHydrationIdentity=identity;
         this.vectorLoading=!!identity&&!!this.embedder.cached&&pages.length>0;
         const current=()=>!this.disposed&&load===this.vectorLoad&&identity===this.host.identity();
-        // Restore only existing local cache. Opening old chats never runs a summary
-        // request or starts inference for missing vectors; repair remains explicit.
+        // Summary records travel with the chat, but vectors are browser-local. Rebuild
+        // missing vectors automatically with the bundled model so a new browser does
+        // not silently degrade to lexical-only retrieval. This never calls a remote API
+        // and never rewrites the summary or chat.
         this.vectorHydration=(async()=>{
             if(!this.vectorLoading)return;
             for(const p of pages){
                 if(!current())return;
-                const key=this.vectorKey(p.record),vectors=await this.embedder.cached(summaryChunks(p.record.summary));
+                const key=this.vectorKey(p.record),chunks=summaryChunks(p.record.summary);
+                let vectors=await this.embedder.cached(chunks);
+                if(!vectors){
+                    if(Date.now()<this.vectorRetryAt)continue;
+                    vectors=await this.embedder.embed(chunks);
+                }
                 if(!current())return;
                 const live=this.pages().find(x=>x.message===p.message);
                 if(vectors?.length&&live?.source===p.source&&live.record?.done&&this.vectorKey(live.record)===key){
                     this.vectors.set(key,vectors);this.emit();
                 }
             }
-        })().catch(()=>{if(current())this.warning='本機向量快取讀取失敗；可按「補齊本機向量」修復，不必重做摘要';}).finally(()=>{
-            if(current()){this.vectorLoading=false;this.emit();}
+        })().catch(()=>{if(current()){this.vectorRetryAt=Date.now()+60000;this.warning='本機向量自動補齊失敗；60 秒後會重試，也可手動按「補齊本機向量」';this.schedule(60000);}}).finally(()=>{
+            if(current()){this.vectorLoading=false;this.vectorHydrationIdentity='';this.emit();}
         });
         return this.vectorHydration;
     }
@@ -356,6 +366,7 @@ export class Engine {
     async tick() {
         if(this.disposed||this.resetting||this.stopping||this.running)return;
         await this.reconcileGeneration();
+        if(!this.vectorLoading&&Date.now()>=this.vectorRetryAt&&this.pages().some(p=>p.record?.done&&!this.hasVector(p.record)))this.loadVectors();
         await this.vectorHydration;
         if(this.queuedRebuild&&!this.generating){await this.resumeQueuedRebuild();this.schedule(0);return;}
         if(this.conflict)return;
@@ -439,6 +450,7 @@ export class Engine {
         const active=()=>{signal.throwIfAborted();const current=this.host.context().chat??[];
             if(identity!==this.host.identity()||epoch!==this.epoch||current.length!==objects.length||current.some((m,i)=>m!==objects[i])||!samePrefix(stamps,chatStamps(current)))throw new DOMException('Chat changed','AbortError');};
         try{
+            await this.vectorHydration;
             active();
             const incoming=[...chat],sourcePages=this.pages(),sourceChat=this.host.context().chat??[];
             const original=[...incoming],present=new Set(incoming.map(m=>this.sourceIndex(m))),boundary=Math.max(...present);
