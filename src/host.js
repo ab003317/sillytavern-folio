@@ -26,7 +26,7 @@ export function uid() {
 
 export class Host {
     constructor(context = () => SillyTavern.getContext()) {
-        this.context = context; this.modules = null; this.rejected = new Set(); this.model = ''; this.models={summary:'',selection:''}; this.counts = new Map();
+        this.context = context; this.modules = null; this.rejected = new Set(); this.model = ''; this.models={summary:'',selection:''}; this.counts = new Map();this.apiSaveTask=null;
     }
     async api() {
         // Isolate the one version-sensitive ST adapter; the rest uses getContext().
@@ -96,19 +96,54 @@ export class Host {
         const issue=!h.model?'尚未填寫模型':h.connection==='direct'?(!h.baseUrl?'尚未填寫 API 網址':''):!['main','current'].includes(h.connection)&&!h.profile?'原連線已不存在':c.mainApi!=='openai'?'主連線不是聊天補全模式':'';
         return {connection:h.connection,label,model:h.model,endpoint:h.connection==='direct'?h.baseUrl:'',ready:!issue,issue};
     }
-    configureHelper(role,connection,model='',{activate=true}={}) {
+    configureHelper(role,connection,model='',{activate=true,persist=true}={}) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
         if(!model.trim())throw new Error(`請填寫${MODEL_ROLES[role]}名稱`);
         if(connection!=='current'&&!this.profiles().some(p=>p.id===connection))throw new Error('連線已不存在，請重新選擇');
         this.settings().helpers[role]={connection,model:model.trim()};
         if(activate)this.settings().apiMode='separate';
-        this.rejected.clear();this.context().saveSettingsDebounced();
+        this.rejected.clear();if(persist)this.context().saveSettingsDebounced();
     }
-    configureDirect(role,input,{activate=true}={}) {
+    configureDirect(role,input,{activate=true,persist=true}={}) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
         const config=directConfig(input,this.settings().helpers[role]);
-        this.settings().helpers[role]=config;if(activate)this.settings().apiMode='separate';if(this.settings().apiMode==='separate')this.models[role]='';this.context().saveSettingsDebounced();
+        this.settings().helpers[role]=config;if(activate)this.settings().apiMode='separate';if(this.settings().apiMode==='separate')this.models[role]='';if(persist)this.context().saveSettingsDebounced();
     }
+    async verifyApiSaved(expected) {
+        const c=this.context();
+        if(typeof c.saveSettings==='function')await c.saveSettings();
+        else {
+            this.settingsModule??=import('/script.js').catch(e=>{this.settingsModule=null;throw e;});
+            const api=await this.settingsModule;
+            if(typeof api.saveSettings!=='function')throw new Error('酒館缺少即時保存介面');
+            await api.saveSettings();
+        }
+        // Native saveSettings catches HTTP failures. Its resolved promise is not
+        // an acknowledgement; read back the exact API configuration from disk.
+        const response=await fetch('/api/settings/get',{method:'POST',headers:c.getRequestHeaders(),body:'{}',cache:'no-store',signal:AbortSignal.timeout(15000)});
+        if(!response.ok)throw new Error('無法核對保存結果');
+        const data=await response.json(),settings=typeof data.settings==='string'?JSON.parse(data.settings):data.settings;
+        const saved=settings?.extension_settings?.folio;
+        if(!saved||saved.apiMode!==expected.apiMode||JSON.stringify(saved.helpers)!==JSON.stringify(expected.helpers))throw new Error('伺服器保存內容不一致');
+    }
+    saveApiChange(change) {
+        if(this.apiSaveTask)return Promise.reject(new Error('API 設定正在保存，請稍候'));
+        const settings=this.settings(),before={apiMode:settings.apiMode,helpers:structuredClone(settings.helpers)};
+        let expected;
+        try{change();expected={apiMode:settings.apiMode,helpers:structuredClone(settings.helpers)};}catch(error){return Promise.reject(error);}
+        const task=Promise.resolve().then(()=>this.verifyApiSaved(expected)).catch(()=>{
+            // Keep the last working settings in this window. The form keeps its
+            // unsaved draft, and no list request is needed to retry the save.
+            if(settings.apiMode===expected.apiMode)settings.apiMode=before.apiMode;
+            if(JSON.stringify(settings.helpers)===JSON.stringify(expected.helpers))settings.helpers=before.helpers;
+            throw new Error('API 設定未確認保存到酒館；草稿已保留，本視窗沿用原設定。請重試保存，不必重新取得模型列表。');
+        }).finally(()=>{if(this.apiSaveTask===task)this.apiSaveTask=null;});
+        this.apiSaveTask=task;return task;
+    }
+    saveHelper(role,source,input) {
+        return this.saveApiChange(()=>source==='saved'?this.configureHelper(role,input.connection,input.model,{activate:false,persist:false}):this.configureDirect(role,input,{activate:false,persist:false}));
+    }
+    saveApiMode(mode){return this.saveApiChange(()=>this.configureApiMode(mode,{persist:false}));}
     savedApiKey(role,provider,baseUrl) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');
         const config=this.settings().helpers[role];
@@ -116,7 +151,7 @@ export class Host {
         // snapshots, connection status, activity, chat and usage records.
         return config?.connection==='direct'&&config.provider===provider&&config.baseUrl===baseUrl?String(config.apiKey??''):'';
     }
-    configureApiMode(mode){if(!['main','separate'].includes(mode))throw new Error('請選擇 API 方案');this.settings().apiMode=mode;this.models={summary:'',selection:''};this.context().saveSettingsDebounced();}
+    configureApiMode(mode,{persist=true}={}){if(!['main','separate'].includes(mode))throw new Error('請選擇 API 方案');this.settings().apiMode=mode;this.models={summary:'',selection:''};if(persist)this.context().saveSettingsDebounced();}
     memory(){return memoryOptions(this.settings().memory);}
     advanced(role){return generationOptions(this.settings().advanced?.[role],role);}
     configureMemory(input){this.settings().memory=memoryOptions(input);this.context().saveSettingsDebounced();}
@@ -177,6 +212,14 @@ export class Host {
         } catch { return estimatedTokens(text); } finally { clearTimeout(timer); }
     }
     async complete(system, prompt, {signal, selection = false} = {}) {
+        // Never start generation with half-saved form data or require /models to
+        // initialize a connection. After failure the last working config is used.
+        if(this.apiSaveTask){
+            signal?.throwIfAborted();let abort;
+            try{await Promise.race([this.apiSaveTask.catch(()=>{}),new Promise((_,reject)=>{abort=()=>reject(signal.reason);signal?.addEventListener('abort',abort,{once:true});})]);}
+            finally{signal?.removeEventListener('abort',abort);}
+        }
+        signal?.throwIfAborted();
         const c = this.context();
         const role=selection?'selection':'summary',helper=this.helper(role),label=MODEL_ROLES[role];
         const advanced=this.advanced(role);system=rolePrompt(role,advanced,this.memory());checkContext(system,prompt,advanced);

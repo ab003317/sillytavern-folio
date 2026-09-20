@@ -1,11 +1,12 @@
 """Installed UI + native send adapter, synthetic chat and mocked outgoing requests.
 No source substitution, paid calls, user chat/settings writes, or listening server.
 """
+import gzip
 import json
 import os
 import pathlib
 from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 OUT=ROOT/'test-results'
@@ -15,8 +16,10 @@ NAME='third-party/sillytavern-folio'
 PREFIX='/scripts/extensions/'+NAME+'/'
 reads={'/api/settings/get','/api/characters/all','/api/characters/get','/api/characters/chats','/api/chats/get','/api/worldinfo/get','/api/presets/get','/api/avatars/get','/api/groups/all','/api/sd/comfy/workflows','/api/secrets/read','/api/backgrounds/all'}
 mock_sends=[]
+saved_folio={'enabled':False,'account':'folio-usage-synthetic'}
 
 def handle(route):
+    global saved_folio
     req=route.request;parsed=urlparse(req.url);path=parsed.path
     if parsed.netloc!=urlparse(ORIGIN).netloc:
         route.abort();return
@@ -25,9 +28,14 @@ def handle(route):
         route.fulfill(response=response,body=json.dumps(entries));return
     if path=='/api/settings/get':
         response=route.fetch();data=response.json();settings=json.loads(data['settings']);ext=settings.setdefault('extension_settings',{})
-        ext['folio']={'enabled':False,'account':'folio-usage-synthetic'}
+        ext['folio']=saved_folio
         ext['disabledExtensions']=[x for x in ext.get('disabledExtensions',[]) if x!=NAME]
         data['settings']=json.dumps(settings);route.fulfill(response=response,body=json.dumps(data));return
+    if path=='/api/settings/save':
+        raw=req.post_data_buffer
+        if raw[:2]==b'\x1f\x8b':raw=gzip.decompress(raw)
+        saved_folio=json.loads(raw)['extension_settings']['folio']
+        route.fulfill(content_type='application/json',body='{}');return
     if path=='/api/backends/chat-completions/generate':
         data=req.post_data_json
         assert data['messages'] and all('合成驗收' in str(m.get('content','')) for m in data['messages']), 'Unexpected request blocked'
@@ -66,9 +74,11 @@ with sync_playwright() as p:
         current_before=page.evaluate('JSON.stringify(SillyTavern.getContext().chatCompletionSettings)')
         api_switch=page.get_by_role('switch',name='使用獨立 API',exact=True)
         api_switch.check()
+        expect(api_switch).to_be_enabled(timeout=15000)
         assert page.locator('.folio-api-current').inner_text()=='目前生效：獨立 API 設定'
         assert page.locator('.folio-active-model').count()==2
         api_switch.uncheck()
+        expect(api_switch).to_be_enabled(timeout=15000)
         assert page.locator('.folio-api-current').inner_text()=='目前生效：酒館主 API'
         assert page.evaluate('JSON.stringify(SillyTavern.getContext().chatCompletionSettings)')==current_before
         page.locator('summary').filter(has_text='不同 API 與模型').click()

@@ -11,13 +11,15 @@ export function mountApiForms(engine,container,{el,button,info,heading}) {
     modeHead.append(current,toggleLabel);mode.append(modeHead,modeDescription,modeFeedback);
     container.append(heading('記憶助手','總結助手寫摘要；提取助手看摘要，選回正文。下面顯示下一次請求實際使用的來源，不是上一次測試結果。'),mode);
     const customization=fold(el,'不同 API 與模型'),grid=el('div','folio-helper-grid');customization.append(el('p','folio-muted','這裡保存兩個用途的獨立設定。是否啟用只由上方開關決定；保存或取得模型列表不會切換模式。'),grid);container.append(customization);
-    toggle.addEventListener('change',()=>{
-        modeFeedback.textContent='';
+    toggle.addEventListener('change',async()=>{
+        modeFeedback.textContent='正在保存 API 模式…';
         try{
-            const separate=toggle.checked;engine.host.configureApiMode(separate?'separate':'main');engine.cancel();engine.connectionTests={summary:null,selection:null};
+            const separate=toggle.checked;engine.cancel();engine.connectionTests={summary:null,selection:null};
             for(const f of Object.values(fields))f.feedback.textContent='';
-            engine.emit();engine.schedule();if(separate)customization.open=true;
-        }catch(e){toggle.checked=engine.host.settings().apiMode==='separate';modeFeedback.textContent=e.message||'切換未完成';}
+            const saved=engine.host.saveApiMode(separate?'separate':'main');engine.emit();await saved;
+            modeFeedback.textContent='API 模式已保存到酒館。';if(separate)customization.open=true;
+        }catch(e){modeFeedback.textContent=e.message||'切換未完成';}
+        finally{engine.emit();engine.schedule();}
     });
     const active=el('div','folio-active-helpers');mode.append(active);
     for(const [role,label] of [['summary','總結'],['selection','提取']]){
@@ -56,27 +58,33 @@ export function mountApiForms(engine,container,{el,button,info,heading}) {
             url.placeholder=PROVIDERS[source.value]?.url||'https://example.com/v1';
             const saved=bindingMatches()?engine.host.savedApiKey(role,source.value,normalizeEndpoint(url.value,source.value)):'';
             key.placeholder=source.value==='custom'?'本機免驗證接口可留空；其他接口請填金鑰':'貼上這個來源的 API 金鑰';
-            keyStatus.textContent=key.value?(key.value===saved?'金鑰已保存；可按「顯示」查看。':'金鑰已填入，尚未保存。'):saved?'金鑰欄已清空，尚未保存。':source.value==='custom'?'未填金鑰；僅適用於免驗證接口。':'尚未填寫金鑰。';
-            f.show.disabled=clear.disabled=!key.value;f.show.setAttribute('aria-pressed',String(key.type==='text'));
+            keyStatus.textContent=f.saving?'正在核對酒館保存結果…':key.value?(key.value===saved?'金鑰已保存；可按「顯示」查看。':'金鑰已填入，尚未保存。'):saved?'金鑰欄已清空，尚未保存。':source.value==='custom'?'未填金鑰；僅適用於免驗證接口。':'尚未填寫金鑰。';
+            f.show.disabled=clear.disabled=state.apiSaving||!key.value;f.show.setAttribute('aria-pressed',String(key.type==='text'));
         }
         const populate=ids=>{list.replaceChildren(...ids.map(id=>{const o=el('option');o.value=id;return o;}));const first=el('option','','選擇一個模型（不會自動保存）');first.value='';picker.replaceChildren(first,...ids.map(id=>{const o=el('option','',id);o.value=id;return o;}));picker.hidden=!ids.length;};
         async function load(){clearList();const version=f.version,controller=new AbortController();f.controller=controller;f.fetch.disabled=true;listStatus.textContent='正在取得模型列表…';
             try{const direct=source.value!=='saved',ids=direct?await engine.host.fetchModels(role,draft(),{signal:controller.signal}):await engine.host.modelChoices(role,connection.value);
                 if(version!==f.version)return;populate(ids);listStatus.textContent=direct?`取得 ${ids.length} 個模型；是否能用，請再測試。`:'已讀取酒館連線的模型建議，也可手填。';
             }catch(e){if(version===f.version&&!controller.signal.aborted)listStatus.textContent=e.message;}
-            finally{if(version===f.version){f.fetch.disabled=false;f.controller=null;}}
+            finally{if(version===f.version){f.fetch.disabled=!!state.apiSaving;f.controller=null;}}
         }
         f.fetch=button('取得模型列表',load,'folio-fetch-models');
-        function save(){
-            if(source.value==='saved')engine.host.configureHelper(role,connection.value,model.value,{activate:false});
-            else engine.host.configureDirect(role,draft(),{activate:false});
-            key.type='password';f.show.textContent='顯示';f.dirty=false;f.optionsKey='';
-            if(engine.host.settings().apiMode==='separate'){engine.cancel();engine.connectionTests[role]=null;engine.retry();}else engine.emit();
-            feedback.textContent=engine.host.settings().apiMode==='main'?'已保存，尚未啟用；目前仍使用酒館主 API。':'已保存，獨立設定已生效。';
+        async function save(){
+            let confirmed=false;
+            invalidate();f.dirty=true;f.saving=true;key.type='password';f.show.textContent='顯示';
+            feedback.textContent='正在保存到酒館並核對…';configured.textContent='正在保存；完成前不會使用這份草稿發送請求。';
+            engine.cancel();engine.connectionTests[role]=null;
+            try{
+                const saved=engine.host.saveHelper(role,source.value,source.value==='saved'?{connection:connection.value,model:model.value}:draft());
+                engine.emit();await saved;confirmed=true;f.dirty=false;f.optionsKey='';
+                feedback.textContent=engine.host.settings().apiMode==='main'?'已保存，尚未啟用；目前仍使用酒館主 API。':'已保存，獨立設定已生效。';
+            }catch(e){configured.textContent='草稿尚未確認保存；本視窗仍使用原設定。';throw e;}
+            finally{f.saving=false;if(confirmed&&engine.host.settings().apiMode==='separate')engine.retry();else{engine.emit();engine.schedule();}}
         }
         function action(task){return async()=>{feedback.textContent='';try{await task();}catch(e){feedback.textContent=e.message||'操作未完成，請稍後重試';}};}
         f.test=button(`測試${label}`,action(async()=>{if(f.dirty)throw new Error('請先保存草稿；測試只使用已生效的設定');if(state.apiMode==='main')throw new Error('獨立設定尚未啟用；請使用上方測試目前連線');await engine.testHelper(role);}));
-        const actions=el('div','folio-toolbar');actions.append(button(`保存${label}`,action(save),'folio-primary'),f.test);
+        f.save=button(`保存${label}`,action(save),'folio-primary');
+        const actions=el('div','folio-toolbar');actions.append(f.save,f.test);
         const modelsBar=el('div','folio-toolbar');modelsBar.append(f.fetch);modelField.append(modelsBar,picker,listStatus);
         section.append(heading(label),el('p','folio-muted',description),sourceField,connectionField,urlField,keyField,modelField,configured,actions,feedback,result);grid.append(section);
         source.addEventListener('change',()=>{clearList();dirty();url.value=PROVIDERS[source.value]?.url??'';key.value='';key.type='password';f.show.textContent='顯示';model.value='';visibility();});
@@ -92,9 +100,11 @@ export function mountApiForms(engine,container,{el,button,info,heading}) {
             if(!f.dirty){source.value=config.connection==='direct'?config.provider:'saved';connection.value=config.connection==='direct'?'current':config.connection;url.value=config.baseUrl||'';model.value=config.model;
                 key.value=config.connection==='direct'?engine.host.savedApiKey(role,config.provider,config.baseUrl):'';
                 configured.textContent=`${state.apiMode==='main'?'已保存，未啟用':'已保存，目前生效'}：${config.label||'目前聊天連線'} / ${config.model||'尚未填寫模型'}`;}
-            visibility();f.test.disabled=state.busy||state.generating||f.dirty||state.apiMode==='main';
+            visibility();f.test.disabled=state.apiSaving||state.busy||state.generating||f.dirty||state.apiMode==='main';
+            for(const control of [source,connection,url,key,model,picker,f.save])control.disabled=!!state.apiSaving;
+            f.fetch.disabled=!!state.apiSaving||!!f.controller;section.setAttribute('aria-busy',String(!!f.saving));
             const keyOptions=source.value+connection.value+JSON.stringify(state.profiles);
-            if(customization.open&&f.optionsKey!==keyOptions){f.optionsKey=keyOptions;if(source.value==='saved')load();}
+            if(!state.apiSaving&&customization.open&&f.optionsKey!==keyOptions){f.optionsKey=keyOptions;if(source.value==='saved')load();}
             if(!f.dirty){const outcome=state.connectionTests[role];result.replaceChildren();
                 if(outcome&&state.apiMode!=='main')result.append(el('p',outcome.ok?'folio-observed':'folio-muted',outcome.pending?'正在測試這個用途…':outcome.ok?`${outcome.model} 測試通過，用時 ${(outcome.ms/1000).toFixed(1)} 秒。`:`測試未通過：${outcome.error}`));
                 if(outcome?.ok&&state.apiMode!=='main')result.append(el('p','folio-summary-text',outcome.summary));}
@@ -103,12 +113,13 @@ export function mountApiForms(engine,container,{el,button,info,heading}) {
     container.append(el('p','folio-muted','向量已內建，會在本機運行。'));
     customization.addEventListener('toggle',()=>{if(customization.open)for(const f of Object.values(fields))f.render();});
     return {render(next){
-        state=next;const follows=state.apiMode==='main';toggle.checked=!follows;toggle.disabled=!!state.generating||!!state.resetting||!!state.stopping;toggleLabel.dataset.enabled=String(!follows);mode.dataset.mode=state.apiMode;
+        state=next;const follows=state.apiMode==='main';toggle.checked=!follows;toggle.disabled=!!state.apiSaving||!!state.generating||!!state.resetting||!!state.stopping;toggleLabel.dataset.enabled=String(!follows);mode.dataset.mode=state.apiMode;
         toggleState.textContent=follows?'已關閉 · 跟隨主 API':'已開啟 · 使用獨立設定';current.textContent=follows?'目前生效：酒館主 API':'目前生效：獨立 API 設定';
+        if(state.apiSaving)current.textContent='正在保存 API 設定…';
         modeDescription.textContent=follows?'總結與提取跟隨酒館目前模型。獨立設定只保留、不啟用。':'總結與提取使用下列已保存設定，不再自動跟隨主模型。切回主 API 不會刪除獨立設定。';
         for(const [role,r] of Object.entries(activeRows)){
             const h=state.activeHelpers?.[role]??{},outcome=state.connectionTests[role];r.source.textContent=h.label||'等待酒館連線';r.model.textContent=h.model||'尚未選擇模型';r.endpoint.textContent=h.endpoint||'';r.endpoint.hidden=!h.endpoint;r.issue.textContent=h.issue||'';r.issue.hidden=!h.issue;
-            r.test.disabled=state.busy||state.generating||!h.ready;r.test.title='只測試上方顯示的生效連線，不保存或啟用草稿；可能產生 API 費用';
+            r.test.disabled=state.apiSaving||state.busy||state.generating||!h.ready;r.test.title='只測試上方顯示的生效連線，不保存或啟用草稿；可能產生 API 費用';
             r.result.textContent=outcome?.pending?'正在測試目前生效的連線…':outcome?.ok?`測試通過：${outcome.model} · ${(outcome.ms/1000).toFixed(1)} 秒`:outcome?`測試未通過：${outcome.error}`:'';r.result.hidden=!outcome;
         }
         for(const f of Object.values(fields))f.render();advanced.render(state);

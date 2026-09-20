@@ -3,7 +3,7 @@ import json
 import mimetypes
 import pathlib
 from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OUT = ROOT / 'test-results'
@@ -69,10 +69,12 @@ with sync_playwright() as p:
         page.wait_for_function("document.querySelector('.folio-active-test-result').textContent.includes('測試通過')")
         assert calls[-1]['model'] == 'fixture-large', 'Dirty drafts must not be silently saved/tested'
         page.get_by_role('button', name='保存總結模型', exact=True).click()
+        expect(page.locator('.folio-helper-section').first.locator('.folio-api-feedback')).to_contain_text('已保存')
         assert not switch.is_checked()
         assert '已保存，尚未啟用' in page.locator('.folio-helper-section').first.inner_text()
         assert summary.locator('.folio-active-model').inner_text() == 'fixture-large'
         switch.check()
+        expect(switch).to_be_enabled()
         assert page.locator('.folio-api-current').inner_text() == '目前生效：獨立 API 設定'
         assert summary.locator('.folio-active-model').inner_text() == 'saved-summary-v2'
         assert selection.locator('.folio-active-model').inner_text() == 'private-selector'
@@ -91,6 +93,7 @@ with sync_playwright() as p:
         page.wait_for_function('!!window.releaseTest')
         switch.focus()
         page.keyboard.press('Space')
+        expect(switch).to_be_enabled()
         assert not switch.is_checked()
         page.evaluate('releaseTest()')
         page.wait_for_function("[...document.querySelectorAll('.folio-active-test-result')].every(e=>!e.textContent)")
@@ -101,6 +104,7 @@ with sync_playwright() as p:
         page.wait_for_function("document.querySelectorAll('.folio-active-test-result')[1].textContent.includes('測試通過')")
         assert calls[-1]['model'] == 'changed-main'
         switch.check()
+        expect(switch).to_be_enabled()
         page.get_by_role('button', name='關閉', exact=True).click()
         page.locator('#folio-wand').click()
         assert not page.locator('#folio-summary-source').is_visible()

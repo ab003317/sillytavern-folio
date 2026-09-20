@@ -24,6 +24,10 @@ window.testContext={chat,chatId:'fictional-fixture',characterId:0,characters:[{a
  chatCompletionSettings:{chat_completion_source:'custom',custom_model:'fixture-large',custom_url:'https://existing-provider.invalid/v1',openai_max_tokens:2000,stream_openai:true},
  isGenerating:()=>!!window.fixtureGenerating,getRequestHeaders:()=>({'Content-Type':'application/json'}),getTokenCountAsync:async(text)=>Math.ceil(text.length*1.5),
  saveChat:async()=>{window.saves++;localStorage.setItem('folio-fixture-chat',JSON.stringify(chat));},
+ saveSettings:async()=>localStorage.setItem('folio-fixture-settings',JSON.stringify(testContext.extensionSettings)),
  saveSettingsDebounced:()=>localStorage.setItem('folio-fixture-settings',JSON.stringify(testContext.extensionSettings))};
+// Model the server readback separately from the mutable in-page settings object.
+const fixtureFetch=window.fetch;
+window.fetch=(url,options)=>String(url)==='/api/settings/get'?Promise.resolve(new Response(JSON.stringify({settings:JSON.stringify({extension_settings:JSON.parse(localStorage.getItem('folio-fixture-settings')||'{}')})}),{headers:{'Content-Type':'application/json'}})):fixtureFetch(url,options);
 window.SillyTavern={getContext:()=>testContext};
 </script><script type="module">await import('/folio/index.js');await events.emit('APP_READY');window.fixtureReady=true;</script></html>

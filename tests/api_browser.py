@@ -3,7 +3,7 @@ import json
 import mimetypes
 import pathlib
 from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 OUT=ROOT/'test-results'
@@ -72,6 +72,7 @@ with sync_playwright() as p:
         # Picker/manual model, separate role keys, save without exposing the stored key.
         page.get_by_label('總結模型可選模型',exact=True).select_option('fixture-summary')
         summary.get_by_role('button',name='保存總結模型',exact=True).click()
+        expect(summary.locator('.folio-api-feedback')).to_contain_text('已保存')
         assert page.locator('#folio-summary-url').input_value()=='https://synthetic.invalid/v1'
         assert page.locator('#folio-summary-key').input_value()=='fixture-key-custom'
         assert page.locator('#folio-summary-key').get_attribute('type')=='password'
@@ -85,6 +86,7 @@ with sync_playwright() as p:
         page.locator('#folio-selection-key').fill('fixture-extract-key')
         page.locator('#folio-selection-model').fill('fixture-extract')
         extraction.get_by_role('button',name='保存提取模型',exact=True).click()
+        expect(extraction.locator('.folio-api-feedback')).to_contain_text('已保存')
         summary.get_by_role('button',name='測試總結模型',exact=True).click()
         page.wait_for_function("document.querySelectorAll('.folio-connection-result')[0].textContent.includes('測試通過')")
         assert calls[-1]['model']=='fixture-summary'
@@ -121,10 +123,12 @@ with sync_playwright() as p:
         summary.get_by_role('button',name='清空總結模型金鑰').click()
         assert page.evaluate('testContext.extensionSettings.folio.helpers.summary.apiKey')=='fixture-key-custom'
         summary.get_by_role('button',name='保存總結模型',exact=True).click()
+        expect(summary.locator('.folio-api-feedback')).to_contain_text('已保存')
         assert page.evaluate('testContext.extensionSettings.folio.helpers.summary.apiKey')==''
         assert '免驗證' in summary.locator('.folio-key-status').inner_text()
         page.locator('#folio-summary-key').fill('fixture-key-custom')
         summary.get_by_role('button',name='保存總結模型',exact=True).click()
+        expect(summary.locator('.folio-api-feedback')).to_contain_text('已保存')
         extraction.get_by_role('button',name='清空提取模型金鑰').click()
         extraction.get_by_role('button',name='保存提取模型',exact=True).click()
         assert '金鑰' in extraction.locator('.folio-api-feedback').inner_text()
