@@ -17,8 +17,32 @@ export class Engine {
         this.stopFailures=new Set();
         this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.pendingUsage=null;
         this.autoPages=new Set();this.seenPages=new Set();this.indexPages=new Set();
+        this.vectorLoad=0;this.vectorLoading=false;this.vectorHydration=Promise.resolve();
     }
     pages() { const identity=this.host.identity();return bookPages(this.host.context().chat ?? []).map(p=>({...p,identity})); }
+    hasVector(record){return !!record?.done&&this.vectors.has(this.vectorKey(record));}
+    loadVectors() {
+        const load=++this.vectorLoad,identity=this.host.identity(),pages=this.pages().filter(p=>p.record?.done&&!this.hasVector(p.record));
+        this.vectorLoading=!!identity&&!!this.embedder.cached&&pages.length>0;
+        const current=()=>!this.disposed&&load===this.vectorLoad&&identity===this.host.identity();
+        // Restore only existing local cache. Opening old chats never runs a summary
+        // request or starts inference for missing vectors; repair remains explicit.
+        this.vectorHydration=(async()=>{
+            if(!this.vectorLoading)return;
+            for(const p of pages){
+                if(!current())return;
+                const key=this.vectorKey(p.record),vectors=await this.embedder.cached(summaryChunks(p.record.summary));
+                if(!current())return;
+                const live=this.pages().find(x=>x.message===p.message);
+                if(vectors?.length&&live?.source===p.source&&live.record?.done&&this.vectorKey(live.record)===key){
+                    this.vectors.set(key,vectors);this.emit();
+                }
+            }
+        })().catch(()=>{if(current())this.warning='本機向量快取讀取失敗；可按「補齊本機向量」修復，不必重做摘要';}).finally(()=>{
+            if(current()){this.vectorLoading=false;this.emit();}
+        });
+        return this.vectorHydration;
+    }
     pendingRebuild(record){return !!record?.rebuild&&!record.rebuild.cancelled&&(!record.done||(!record.rebuild.indexed&&!record.rebuild.vectorFallback));}
     rebuildState(pages=this.pages()) {
         const records=pages.map(p=>p.record).filter(r=>r?.rebuild);
@@ -27,7 +51,7 @@ export class Engine {
         const group=records.filter(r=>r.rebuild.id===newest.id),pending=group.filter(r=>this.pendingRebuild(r)).length;
         return {id:newest.id,mode:newest.mode??'all',total:newest.total,done:group.filter(r=>r.done&&!r.rebuild.cancelled).length,pending,
             cancelled:group.filter(r=>r.rebuild.cancelled).length,removed:Math.max(0,newest.total-group.length),
-            vectors:group.filter(r=>r.rebuild.indexed&&!r.rebuild.cancelled).length,vectorFallback:group.some(r=>r.rebuild.vectorFallback),complete:pending===0};
+            vectors:group.filter(r=>this.hasVector(r)&&!r.rebuild.cancelled).length,vectorFallback:group.some(r=>r.done&&!r.rebuild.cancelled&&!this.hasVector(r)),complete:pending===0};
     }
     traceValid(trace){return trace&&samePrefix(trace.stamps,chatStamps(this.host.context().chat??[]));}
     loadUsage(identity) {
@@ -94,7 +118,7 @@ export class Engine {
         const auto={active:automatic&&automaticTotal>0&&(automaticWorking||pendingSummaries>0||pendingVectors>0),available:automatic,total:automaticTotal,ready:automaticReady,indexed:automaticIndexed,phase,
             done:phase==='vector'?automaticIndexed:automaticReady,pendingSummaries,pendingVectors,manualPending,catalogueTotal:total,current:this.work?{...this.work}:null,
             waitingForGeneration:this.generating,complete:automaticTotal>0&&automaticReady===automaticTotal&&automaticIndexed===automaticTotal};
-        return {entries,total,ready,indexed,missing:total-ready,hidden:entries.filter(p=>p.hidden).length,
+        return {entries,total,ready,indexed,missing:total-indexed,summaryMissing:total-ready,vectorMissing:ready-indexed,vectorLoading:this.vectorLoading,hidden:entries.filter(p=>p.hidden).length,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
             resetting:this.resetting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
@@ -125,6 +149,7 @@ export class Engine {
         }
         const livePages=new Set(this.pages().map(p=>p.message));for(const set of [this.autoPages,this.indexPages])for(const message of set)if(!livePages.has(message))set.delete(message);this.seenPages=livePages;
         this.observedStamps=stamps;
+        this.loadVectors();
         this.setStatus(identity?'已就緒；舊聊天只在一鍵重新整理時處理':'等待開啟聊天');this.schedule();
     }
     newResponse({replacement=false}={}) {
@@ -186,20 +211,24 @@ export class Engine {
         const r=structuredClone(p.record??newRecord(p.message,p.playerInput));r.pinned=!r.pinned;await this.savePage(p,r);
     }
     async refresh(index) {return this.queueRebuild([this.resolvePage(index)]);}
-    rebuildTargets(mode='all'){return this.pages().filter(p=>mode!=='missing'||!p.record?.done);}
+    needsRebuild(page,mode){return mode==='all'||(mode==='vectors'?page.record?.done&&!this.hasVector(page.record):!this.hasVector(page.record));}
+    rebuildTargets(mode='all'){return this.pages().filter(p=>this.needsRebuild(p,mode));}
     async refreshAll(identity=this.host.identity()) {return this.requestRebuild('all',identity);}
     async refreshMissing(identity=this.host.identity()) {return this.requestRebuild('missing',identity);}
+    async repairVectors(identity=this.host.identity()) {return this.requestRebuild('vectors',identity);}
     async requestRebuild(mode,identity) {
         await this.reconcileGeneration();
+        await this.vectorHydration;
         if(identity!==this.host.identity())throw new Error('聊天已切換，請在目前聊天重新操作');
         if(this.stopping||this.resetting||this.rebuildState()?.pending||this.queuedRebuild)throw new Error('已有重整任務，請等完成或先停止本次重整');
         const pages=this.rebuildTargets(mode);
-        if(mode==='missing'&&!pages.length){this.setStatus('沒有未整理的正文；已有摘要未改動');return;}
-        this.validateRebuild(pages);
+        if(mode!=='all'&&!pages.length){this.setStatus('沒有未整理的目標；已有摘要與可用向量未改動');return;}
+        this.validateRebuild(pages,mode);
         if(this.generating){
             this.queuedRebuild={identity,mode,requestedAt:Date.now()};this.warning='';
-            this.log(`${mode==='missing'?'整理未整理的':'重新整理全部'}已接受；本次角色回覆完成後開始`);
-            this.setStatus(`${mode==='missing'?'整理未整理的':'一鍵重新整理'}已排隊；等待本次角色回覆完成`);return;
+            const label=mode==='vectors'?'補齊本機向量':mode==='missing'?'整理未整理的':'重新整理全部';
+            this.log(`${label}已接受；本次角色回覆完成後開始`);
+            this.setStatus(`${label}已排隊；等待本次角色回覆完成`);return;
         }
         return this.queueRebuild(pages,mode);
     }
@@ -219,22 +248,23 @@ export class Engine {
             throw error;
         }
     }
-    validateRebuild(pages) {
+    validateRebuild(pages,mode='all') {
         if(!pages.length)throw new Error('這段聊天沒有可整理的正文，請先開啟聊天');
         if(this.conflict)throw new Error('Anima 仍在接管記憶，請先停用衝突插件');
+        if(mode!=='all'&&pages.every(p=>p.record?.done))return;
         if(this.host.context().mainApi!=='openai')throw new Error('請先使用酒館「聊天補全」模式');
         const helper=this.host.helper?.('summary');if(helper&&helper.connection!=='main'&&!helper.model)throw new Error('請先在記憶助手填寫總結模型');
     }
     queueRebuild(pages,mode='all') {
         const operation={identity:pages[0]?.identity,pages,mode,cancelled:false};
         if(this.resetting||this.stopping||this.rebuildState()?.pending||this.queuedRebuild)return Promise.reject(new Error('已有重整任務，請等完成或先停止本次重整'));
-        if(mode==='missing'&&!pages.length){this.setStatus('沒有未整理的正文；已有摘要未改動');return Promise.resolve();}
+        if(mode!=='all'&&!pages.length){this.setStatus('沒有未整理的目標；已有摘要與可用向量未改動');return Promise.resolve();}
         this.rebuildOperation=operation;
         const task=this.createRebuild(pages,operation);this.rebuildSetup=task;
         return task.finally(()=>{if(this.rebuildOperation===operation)this.rebuildOperation=null;});
     }
     async createRebuild(pages,operation) {
-        this.validateRebuild(pages);
+        this.validateRebuild(pages,operation.mode);
         const identity=pages[0].identity;let locked=false;
         this.resetting=true;this.setStatus('正在建立手動重整任務…');
         const validate=()=>{if(operation.cancelled||this.disposed)throw new DOMException('重整已取消','AbortError');this.assertPages(pages);if(this.generating)throw new Error('正文已開始生成；原摘要未改動，請完成後重新整理');};
@@ -244,17 +274,17 @@ export class Engine {
             validate();
             const live=this.assertPages(pages);
             // A background summary may have completed while we waited for idle/lease.
-            if(operation.mode==='missing')pages=pages.filter(p=>!live.get(p.message)?.record?.done);
+            if(operation.mode!=='all')pages=pages.filter(p=>this.needsRebuild(live.get(p.message),operation.mode));
             if(!pages.length){this.setStatus('沒有未整理的正文；已有摘要未改動');return;}
             const job={id:uid(),mode:operation.mode,requestedAt:[...live.values()].reduce((n,p)=>Math.max(n,(p.record?.rebuild?.requestedAt??0)+1),Date.now()),total:pages.length};
             const pairs=pages.map(p=>{const current=live.get(p.message)?.record;
                 const previous=current?structuredClone(current):null;if(previous)delete previous.rebuild;
-                const base=operation.mode==='missing'&&current?structuredClone(current):newRecord(p.message,p.playerInput);
-                const r={...base,pinned:!!current?.pinned,revision:uid(),rebuild:{...job,previous}};return [p,r];});
+                const base=operation.mode!=='all'&&current?structuredClone(current):newRecord(p.message,p.playerInput);
+                const r={...base,pinned:!!current?.pinned,revision:uid(),rebuild:{...job,...(base.done?{}:{previous})}};return [p,r];});
             await this.persistRebuild(pairs,validate);
             if(operation.cancelled||identity!==this.host.identity()||this.disposed)return;
             this.invalidateTrace();this.notice='記憶正在重整；待發送選頁已失效，已發送紀錄保留。';
-            this.log(pages.length===1?`第 ${pages[0].number} 頁已排入優先重整`:`已排入 ${pages.length} 頁全文重整`);
+            this.log(operation.mode==='vectors'?`已排入 ${pages.length} 頁本機向量補齊，不呼叫總結 API`:pages.length===1?`第 ${pages[0].number} 頁已排入優先重整`:`已排入 ${pages.length} 頁${operation.mode==='missing'?'缺失摘要／向量補齊':'全文重整'}`);
             this.failures=0;this.vectorRetryAt=0;this.warning='';this.setStatus(`已排入 ${pages.length} 頁重整；不受自動記憶開關影響`);
         }catch(e){
             if(operation.cancelled)return;
@@ -289,7 +319,7 @@ export class Engine {
                 const current=p.record;
                 // A completed summary is retained even if its vector step was pending.
                 const r=structuredClone(current.done?current:current.rebuild.previous??newRecord(p.message,p.playerInput));
-                r.pinned=current.pinned;r.revision=uid();r.rebuild={...current.rebuild,cancelled:!current.done,indexed:!!current.rebuild.indexed};delete r.rebuild.previous;
+                r.pinned=current.pinned;r.revision=uid();r.rebuild={...current.rebuild,cancelled:!current.done||current.rebuild.mode==='vectors',indexed:!!current.rebuild.indexed};delete r.rebuild.previous;
                 if(current.done&&!r.rebuild.indexed)r.rebuild.vectorFallback=true;return [p,r];
             });
             if(pairs.length)await this.persistRebuild(pairs);
@@ -311,6 +341,7 @@ export class Engine {
     async tick() {
         if(this.disposed||this.resetting||this.stopping||this.running)return;
         await this.reconcileGeneration();
+        await this.vectorHydration;
         if(this.queuedRebuild&&!this.generating){await this.resumeQueuedRebuild();this.schedule(0);return;}
         if(this.conflict)return;
         const pages=this.pages(),manual=pages.filter(p=>this.pendingRebuild(p.record)),manualMode=manual.length>0;
@@ -319,8 +350,8 @@ export class Engine {
         if(this.disposed||this.resetting||this.stopping||this.running||this.generating||this.selectController||(!this.host.settings().enabled&&!manualMode&&!indexMode)){this.schedule();return;}
         const c=this.host.context(),identity=this.host.identity();
         if(!identity||!c.chat?.length){this.setStatus('等待開啟聊天');return;}
-        if(c.mainApi!=='openai'){this.setStatus('等待「聊天補全」連線');return;}
         const automatic=pages.filter(p=>this.autoPages.has(p.message)&&(!p.record?.done||!this.vectors.has(this.vectorKey(p.record))));
+        if(c.mainApi!=='openai'&&(manualMode?manual: indexMode?requestedIndexes:automatic).some(p=>!p.record?.done)){this.setStatus('等待「聊天補全」連線');return;}
         if(!manualMode&&!indexMode&&!automatic.length){this.setStatus('已就緒；只會自動整理接下來的新回覆');this.schedule(15000);return;}
         this.running=true;let idleDone;this.idle=new Promise(resolve=>{idleDone=resolve;});const controller=new AbortController();this.controller=controller;
         const epoch=this.epoch,signal=controller.signal;let locked=false,renew=null,nextDelay=700;
@@ -347,12 +378,12 @@ export class Engine {
                 if(!this.vectors.has(this.vectorKey(r))&&Date.now()>=this.vectorRetryAt){
                     this.work={stage:'vector',page:p.number};this.setStatus(`正在建立第 ${p.number} 頁的本機向量`);
                     try{const vectors=await this.embedder.embed(summaryChunks(r.summary),signal);active(p);this.vectors.set(this.vectorKey(r),vectors);this.warning='';}
-                    catch(e){active(p);this.vectorRetryAt=Date.now()+60000;this.warning='向量暫不可用；摘要繼續整理，暫時使用文字檢索';}
+                    catch(e){active(p);this.vectorRetryAt=Date.now()+60000;this.warning='向量暫不可用；摘要保留，可按「補齊本機向量」重試，暫時使用文字檢索';}
                 }
                 if(manualMode){r.rebuild.indexed=this.vectors.has(this.vectorKey(r));r.rebuild.vectorFallback=!r.rebuild.indexed;await this.savePage(p,r);active(p);}
                 if(indexMode&&this.vectors.has(this.vectorKey(r)))this.indexPages.delete(p.message);
             }
-            if(!target){this.work=null;this.setStatus(manualMode?this.warning?'重整摘要已完成；向量暫用文字檢索':'本次重新整理已完成':indexMode?this.warning?'人工摘要已保存；向量暫用文字檢索':'人工摘要與向量已就緒':'已就緒；只會自動整理接下來的新回覆');nextDelay=manualMode?700:15000;return;}
+            if(!target){this.work=null;this.setStatus(manualMode?this.warning?'摘要已完成；向量尚待補齊':manual[0]?.record?.rebuild?.mode==='vectors'?'本機向量已補齊；已有摘要未重做':'本次重新整理已完成':indexMode?this.warning?'人工摘要已保存；向量暫用文字檢索':'人工摘要與向量已就緒':'已就緒；只會自動整理接下來的新回覆');nextDelay=manualMode?700:15000;return;}
             const p=target,r=p.record;r.chunkSize??=r.parts.length?3600:(this.host.summaryChunkSize?.()??3600);const parts=splitBody(p.body,r.chunkSize);
             this.work={stage:'summary',page:p.number,part:r.parts.length+1,total:parts.length};
             this.setStatus(`正在整理第 ${p.number} 頁（${r.parts.length+1}/${parts.length} 段）`);active(p);
@@ -436,7 +467,7 @@ export class Engine {
                 this.setStatus('正在用小摘要查頁；選中後才取回正文');trace.mode='hybrid';
                 for(const p of older){
                     p.vectors=this.vectors.get(this.vectorKey(p.record));
-                    if(!p.vectors&&this.embedder.cached){p.vectors=await this.embedder.cached(summaryChunks(p.summary));if(p.vectors?.length)this.vectors.set(this.vectorKey(p.record),p.vectors);}
+                    if(!p.vectors&&this.embedder.cached){p.vectors=await this.embedder.cached(summaryChunks(p.summary));active();if(p.vectors?.length)this.vectors.set(this.vectorKey(p.record),p.vectors);}
                 }
                 let queryVector=null;
                 try{[queryVector]=await this.embedder.embed([excerpt(query,400)],signal,true);}

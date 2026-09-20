@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Engine} from '../src/engine.js';
-import {KEY,newRecord,sourceOf,validRecord,bookPages} from '../src/core.js';
+import {KEY,MODEL,summaryChunks,fingerprint,newRecord,sourceOf,validRecord,bookPages} from '../src/core.js';
+import {Embedder} from '../src/embedding.js';
 import {sha256} from '../src/hash.js';
 import {mergeUsage} from '../src/usage.js';
 
@@ -96,9 +97,109 @@ test('missing-only resumes valid partial chunks but rebuilds invalid source summ
     assert.equal(JSON.stringify(r.c.chat[2]),saved);
 });
 
-test('missing-only ignores unloaded vectors of completed pages',async()=>{
-    const r=rig();ready(r);r.engine.toggle(false);r.engine.vectors.clear();const before=JSON.stringify(r.c.chat);
-    await r.engine.refreshMissing();await r.engine.tick();assert.equal(r.stats().calls,0);assert.equal(JSON.stringify(r.c.chat),before);
+test('missing-only repairs unloaded vectors without re-summarizing completed pages',async()=>{
+    const r=rig();ready(r);r.engine.toggle(false);r.engine.vectors.clear();const before=structuredClone(r.c.chat[0].extra[KEY]);
+    assert.equal(r.engine.snapshot().missing,1);assert.equal(r.engine.snapshot().summaryMissing,0);assert.equal(r.engine.snapshot().vectorMissing,1);
+    await r.engine.refreshMissing();await r.engine.tick();assert.equal(r.stats().calls,0);assert.equal(r.engine.snapshot().missing,0);
+    const after=r.c.chat[0].extra[KEY];for(const key of Object.keys(before))assert.deepEqual(after[key],before[key]);
+});
+
+test('opening restores every valid cached vector, including hidden/recent pages, without inference or saving chat',async()=>{
+    const r=rig([message('隱藏舊頁',0),message('近期已整理',1),message('未整理舊頁',2)]);ready(r);
+    r.c.chat[0].is_system=true;delete r.c.chat[2].extra[KEY];
+    r.embedder=new Embedder(r.cache);r.engine.embedder=r.embedder;
+    r.embedder.request=()=>assert.fail('opening must not run inference');
+    for(const p of r.engine.pages().filter(p=>p.record?.done))for(const text of summaryChunks(p.record.summary)){
+        await r.cache.put('vectors',MODEL+':'+fingerprint(text),{text,vector:Array(512).fill(.1)});
+    }
+    const before=JSON.stringify(r.c.chat);r.c.chatId='reopened';r.engine.changed();
+    assert.equal(r.engine.snapshot().vectorLoading,true);await r.engine.tick();
+    const s=r.engine.snapshot();assert.equal(s.vectorLoading,false);assert.equal(s.ready,2);assert.equal(s.indexed,2);assert.equal(s.missing,1);
+    assert.equal(s.vectorMissing,0);assert.equal(JSON.stringify(r.c.chat),before);assert.deepEqual(r.stats(),{calls:0,saves:0});
+    r.engine.dispose();
+});
+
+test('missing cache stays visibly unfinished on open; vector repair skips old unsummarized pages',async()=>{
+    const r=rig([message('有效人工摘要',0),message('舊聊天尚無摘要',1)]);ready(r);delete r.c.chat[1].extra[KEY];
+    r.c.chat[0].extra[KEY].edited=true;r.c.chat[0].extra[KEY].pinned=true;r.c.chat[0].is_system=true;
+    const original=structuredClone(r.c.chat[0].extra[KEY]);r.embedder.cached=async()=>null;let embeddings=0;
+    r.embedder.embed=async()=>{embeddings++;return [[1,0]];};r.host.helper=()=>({connection:'direct',model:''});
+    r.c.mainApi='kobold';r.c.chatId='new-browser';r.engine.changed();await r.engine.tick();
+    assert.equal(embeddings,0);assert.deepEqual(r.stats(),{calls:0,saves:0});assert.equal(r.engine.snapshot().missing,2);
+    r.engine.toggle(false);await r.engine.repairVectors();assert.equal(r.engine.snapshot().rebuild.mode,'vectors');await r.engine.tick();
+    assert.equal(embeddings,1);assert.equal(r.stats().calls,0);assert.equal(r.engine.snapshot().vectorMissing,0);assert.equal(r.engine.snapshot().summaryMissing,1);
+    for(const key of Object.keys(original))assert.deepEqual(r.c.chat[0].extra[KEY][key],original[key]);
+    assert.equal(r.c.chat[1].extra[KEY],undefined);assert.equal(r.c.chat[0].is_system,true);assert.equal(r.host.settings().enabled,false);
+});
+
+test('mixed missing job only pays for missing summaries, retaining vector-only page contents',async()=>{
+    const r=rig([message('只有向量遺失',0),message('需新摘要',1),message('兩者已完成',2)]);ready(r);r.engine.toggle(false);
+    const keep=JSON.stringify(r.c.chat[2]);r.engine.vectors.delete(r.engine.vectorKey(r.c.chat[0].extra[KEY]));delete r.c.chat[1].extra[KEY];
+    await r.engine.refreshMissing();assert.equal(r.engine.snapshot().rebuild.total,2);
+    for(let i=0;i<4;i++)await r.engine.tick();assert.equal(r.stats().calls,1);assert.equal(r.engine.snapshot().missing,0);
+    assert.equal(r.c.chat[0].extra[KEY].summary,'只有向量遺失');assert.equal(JSON.stringify(r.c.chat[2]),keep);
+});
+
+test('late cached vectors cannot repopulate a deleted page or switched chat',async()=>{
+    for(const action of ['delete','switch','edit']){
+        const r=rig();ready(r);r.engine.vectors.clear();let release;r.embedder.cached=()=>new Promise(resolve=>{release=resolve;});
+        const loading=r.engine.loadVectors();assert.equal(r.engine.snapshot().vectorLoading,true);
+        if(action==='delete')r.c.chat=[];else if(action==='switch'){r.c.chatId='other';r.c.chat=[];}else r.c.chat[0].mes='修改後正文';
+        r.engine.changed();release([[1,0]]);await loading;await r.engine.vectorHydration;
+        assert.equal(r.engine.vectors.size,0);assert.equal(r.engine.snapshot().vectorLoading,false);assert.equal(r.stats().calls,0);
+    }
+});
+
+test('late cache for a replaced summary is discarded even if the body is unchanged',async()=>{
+    const r=rig();ready(r);r.engine.vectors.clear();let release;r.embedder.cached=()=>new Promise(resolve=>{release=resolve;});
+    const old=r.c.chat[0].extra[KEY],loading=r.engine.loadVectors();r.c.chat[0].extra[KEY]={...old,summary:'新的人工摘要'};
+    release([[1,0]]);await loading;assert.equal(r.engine.vectors.size,0);assert.equal(r.stats().calls,0);
+});
+
+test('in-place summary changes cannot store an older cached vector under the newer summary key',async()=>{
+    const r=rig();ready(r);r.engine.vectors.clear();let release;r.embedder.cached=()=>new Promise(resolve=>{release=resolve;});
+    const loading=r.engine.loadVectors();r.c.chat[0].extra[KEY].summary='原物件上改寫的摘要';
+    release([[1,0]]);await loading;assert.equal(r.engine.vectors.size,0);
+});
+
+test('failed vector repair stays missing and can be retried without summary requests',async()=>{
+    const r=rig();ready(r);r.engine.toggle(false);r.engine.vectors.clear();
+    r.embedder.embed=async()=>{throw new Error('worker unavailable');};
+    await r.engine.repairVectors();await r.engine.tick();
+    const s=r.engine.snapshot();assert.equal(s.rebuild.complete,true);assert.equal(s.rebuild.vectorFallback,true);assert.equal(s.missing,1);assert.equal(s.vectorMissing,1);
+    assert.match(s.warning,/補齊本機向量/);r.embedder.embed=async()=>[[1,0]];
+    await r.engine.refreshMissing();await r.engine.tick();assert.equal(r.engine.snapshot().missing,0);assert.equal(r.stats().calls,0);
+});
+
+test('vector repair can be stopped mid-inference without adopting late output or automatically restarting',async()=>{
+    const r=rig();ready(r);r.engine.vectors.clear();let entered;
+    const started=new Promise(resolve=>{entered=resolve;});
+    r.embedder.embed=async(_texts,signal)=>{entered();await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));return [[1,0]];};
+    await r.engine.repairVectors();const running=r.engine.tick();await started;await r.engine.stopRebuild();await running;
+    assert.equal(r.engine.snapshot().indexed,0);assert.equal(r.engine.snapshot().rebuild.cancelled,1);assert.equal(r.c.chat[0].extra[KEY].done,true);
+    await r.engine.tick();assert.equal(r.engine.snapshot().indexed,0);assert.equal(r.stats().calls,0);
+});
+
+test('vector repair queued during main generation can be cancelled without aborting main selection',async()=>{
+    const r=rig();ready(r);r.engine.vectors.clear();r.engine.toggle(false);r.engine.generationStarted();
+    r.engine.selectController=new AbortController();const main=r.engine.selectController;
+    await r.engine.repairVectors();assert.equal(r.engine.snapshot().rebuildMode,'vectors');await r.engine.stopRebuild();assert.equal(main.signal.aborted,false);
+    await r.engine.generationEnded();await r.engine.tick();assert.equal(r.engine.snapshot().indexed,0);assert.equal(r.stats().calls,0);
+});
+
+test('saved vector-only work resumes after reload with auto off and no summary API configured',async()=>{
+    const r=rig([message('已保存的摘要',0),message('沒有摘要的頁',1)]);ready(r);delete r.c.chat[1].extra[KEY];r.engine.vectors.clear();r.engine.toggle(false);
+    await r.engine.repairVectors();r.engine.dispose();r.c.mainApi='kobold';
+    const other=new Engine(r.host,r.cache,r.embedder);other.schedule=()=>{};other.changed();await other.tick();
+    assert.equal(other.snapshot().rebuild.mode,'vectors');assert.equal(other.snapshot().indexed,1);assert.equal(other.snapshot().summaryMissing,1);assert.equal(r.stats().calls,0);other.dispose();
+});
+
+test('deletion during vector inference never attaches results to the shifted replacement',async()=>{
+    const r=rig([message('刪除目標',0),message('保留目標',1)]);ready(r);r.engine.vectors.clear();r.engine.toggle(false);let release,started;
+    const entering=new Promise(resolve=>{started=resolve;});r.embedder.embed=async()=>{started();return new Promise(resolve=>{release=resolve;});};
+    await r.engine.repairVectors();const running=r.engine.tick();await entering;r.c.chat.shift();r.engine.changed({deleted:true});release([[1,0]]);await running;
+    assert.equal(r.engine.snapshot().indexed,0);assert.equal(r.engine.snapshot().rebuild.removed,1);assert.equal(r.stats().calls,0);
+    r.embedder.embed=async()=>[[0,1]];await r.engine.tick();assert.equal(r.engine.snapshot().indexed,1);assert.equal(r.c.chat[0].extra[KEY].summary,'保留目標');
 });
 
 test('missing-only queue keeps its scope after generation, excludes completed pages and deleted sources',async()=>{

@@ -74,7 +74,7 @@ with sync_playwright() as p:
           const t={real,before,settings,chat,host,cache,embedder,calls:0,previous:window.folioIntercept,preserved:JSON.stringify(last.message)};window.scopeTest=t;
           host.complete=async(_s,_p,options)=>{if(options.selection)return '{"ids":["p1"]}';t.calls++;return '{"summary":"合成驗收新目錄"}';};
           document.querySelector('.folio-dialog').remove();document.querySelector('#folio-wand').remove();
-          t.engine=new Engine(host,cache,embedder,s=>t.ui?.update(s));t.engine.schedule=()=>{};t.engine.changed();t.ui=mountUI(t.engine);t.ui.open();window.folioIntercept=(...args)=>t.engine.intercept(...args);
+          t.engine=new Engine(host,cache,embedder,s=>t.ui?.update(s));t.engine.schedule=()=>{};t.engine.changed();t.engine.vectors.set(t.engine.vectorKey(record),[[1,0]]);t.ui=mountUI(t.engine);t.ui.open();window.folioIntercept=(...args)=>t.engine.intercept(...args);
           return {missing:t.engine.snapshot().missing,total:t.engine.snapshot().total};
         }""", PREFIX)
         assert result == {'missing': 1, 'total': 2}, result
@@ -94,8 +94,22 @@ with sync_playwright() as p:
         page.locator('#folio-view-run').get_by_role('button', name='一鍵重新整理全部', exact=True).click()
         page.wait_for_function('scopeTest.engine.snapshot().rebuild?.pending===2')
         assert page.evaluate('async()=>{for(let i=0;i<4;i++)await scopeTest.engine.tick();return scopeTest.calls;}') == 3
+        # Switch to the installed, real local WASM embedder for native repair UI.
+        page.evaluate("""async prefix=>{
+          const {Embedder}=await import(prefix+'src/embedding.js');const t=scopeTest;
+          t.engine.embedder=new Embedder(t.cache);t.engine.vectors.clear();t.engine.emit();
+          t.summaryBefore=JSON.stringify(t.chat.map(m=>m.extra.folio_memory?.summary));
+        }""", PREFIX)
+        page.locator('#folio-view-run').get_by_role('button', name='補齊本機向量', exact=True).click()
+        page.wait_for_function("scopeTest.engine.snapshot().rebuild?.mode==='vectors'&&scopeTest.engine.snapshot().rebuild?.pending===2")
+        result = page.evaluate("""async()=>{
+          const t=scopeTest;await t.engine.tick();const built=t.engine.snapshot();
+          t.engine.vectors.clear();t.engine.changed();await t.engine.vectorHydration;const restored=t.engine.snapshot();
+          return {built:built.indexed,restored:restored.indexed,calls:t.calls,summariesPreserved:JSON.stringify(t.chat.map(m=>m.extra.folio_memory?.summary))===t.summaryBefore,realChatUntouched:JSON.stringify(t.real.chat)===t.before,settingsUntouched:JSON.stringify(t.real.chatCompletionSettings)===t.settings};
+        }""")
+        assert result == {'built': 2, 'restored': 2, 'calls': 3, 'summariesPreserved': True, 'realChatUntouched': True, 'settingsUntouched': True}, result
         page.evaluate('()=>{scopeTest.ui.dispose();scopeTest.engine.dispose();window.folioIntercept=scopeTest.previous;}')
         assert not errors, errors
-        print(json.dumps({'passed': True, 'localOverride': os.environ.get('FOLIO_LOCAL') == '1', 'missingSummaryCalls': 1, 'allAdditionalCalls': 2, 'nativeSerializedMessages': 5, 'hiddenBodyOccurrences': 1, 'realUserDataUnchanged': True, 'browserErrors': errors}), flush=True)
+        print(json.dumps({'passed': True, 'localOverride': os.environ.get('FOLIO_LOCAL') == '1', 'missingSummaryCalls': 1, 'allAdditionalCalls': 2, 'nativeSerializedMessages': 5, 'hiddenBodyOccurrences': 1, 'realWasmRepairAndHydration': True, 'vectorOnlyApiCalls': 0, 'realUserDataUnchanged': True, 'browserErrors': errors}), flush=True)
     finally:
         browser.close()
