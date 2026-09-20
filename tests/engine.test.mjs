@@ -75,6 +75,121 @@ test('one-click rebuild summarizes every selected existing page exactly once, pr
     assert.equal(r.c.chat[0].extra[KEY],undefined);assert.equal(r.c.chat[2].extra[KEY],undefined);
 });
 
+test('missing-only preserves ready manual summaries and vectors, fills missing pages once',async()=>{
+    const r=rig([message('已整理',0),message('待補正文',1)]);ready(r);r.engine.toggle(false);
+    r.c.chat[0].extra[KEY].edited=true;r.c.chat[0].extra[KEY].pinned=true;
+    const preserved=JSON.stringify(r.c.chat[0]);delete r.c.chat[1].extra[KEY];
+    await r.engine.refreshMissing();assert.equal(r.engine.snapshot().rebuild.mode,'missing');assert.equal(r.engine.snapshot().rebuild.total,1);
+    for(let i=0;i<3;i++)await r.engine.tick();
+    assert.equal(r.stats().calls,1);assert.equal(JSON.stringify(r.c.chat[0]),preserved);assert.equal(r.engine.snapshot().missing,0);
+    assert.ok(r.engine.vectors.has(r.engine.vectorKey(r.c.chat[0].extra[KEY])));
+    await r.engine.refreshMissing();assert.equal(r.stats().calls,1);assert.match(r.engine.status,/沒有未整理/);
+});
+
+test('missing-only resumes valid partial chunks but rebuilds invalid source summaries',async()=>{
+    const r=rig([message('甲'.repeat(1500),0),message('舊文字',1),message('有效人工摘要',2)]);ready(r);r.engine.toggle(false);
+    const partial=r.c.chat[0].extra[KEY];Object.assign(partial,{done:false,parts:['第一段已有摘要'],summary:'第一段已有摘要',chunkSize:800});
+    r.c.chat[1].mes='已修改的正文';const saved=JSON.stringify(r.c.chat[2]);const inputs=[];
+    r.host.complete=async(_s,p)=>{inputs.push(JSON.parse(p).text);return '{"summary":"新段摘要"}';};
+    await r.engine.refreshMissing();for(let i=0;i<4;i++)await r.engine.tick();
+    assert.deepEqual(inputs,['甲'.repeat(700),'已修改的正文']);assert.equal(r.c.chat[0].extra[KEY].parts[0],'第一段已有摘要');
+    assert.equal(JSON.stringify(r.c.chat[2]),saved);
+});
+
+test('missing-only ignores unloaded vectors of completed pages',async()=>{
+    const r=rig();ready(r);r.engine.toggle(false);r.engine.vectors.clear();const before=JSON.stringify(r.c.chat);
+    await r.engine.refreshMissing();await r.engine.tick();assert.equal(r.stats().calls,0);assert.equal(JSON.stringify(r.c.chat),before);
+});
+
+test('missing-only queue keeps its scope after generation, excludes completed pages and deleted sources',async()=>{
+    const r=rig([message('完成',0),message('排隊時待整理',1),message('排隊時刪除',2)]);ready(r);r.engine.toggle(false);
+    delete r.c.chat[1].extra[KEY];delete r.c.chat[2].extra[KEY];const keep=JSON.stringify(r.c.chat[0]);
+    r.engine.generationStarted();await r.engine.refreshMissing();assert.equal(r.engine.snapshot().rebuildMode,'missing');
+    r.c.chat.pop();r.engine.changed({deleted:true});r.c.chat.push(message('新回覆',3));
+    await r.engine.generationEnded();assert.equal(r.engine.snapshot().rebuild.total,2);
+    for(let i=0;i<4;i++)await r.engine.tick();assert.equal(r.stats().calls,2);assert.equal(JSON.stringify(r.c.chat[0]),keep);
+});
+
+test('missing queue cancels without starting later or accepting a second task',async()=>{
+    const r=rig();r.engine.toggle(false);r.engine.generationStarted();await r.engine.refreshMissing();
+    await assert.rejects(r.engine.refreshAll(),/已有重整任務/);await assert.rejects(r.engine.refresh(0),/已有重整任務/);
+    await r.engine.stopRebuild();await r.engine.generationEnded();await r.engine.tick();assert.equal(r.stats().calls,0);
+});
+
+test('missing request rechecks completed pages after idle instead of resetting them',async()=>{
+    const r=rig();r.engine.toggle(false);let release;r.engine.idle=new Promise(resolve=>{release=resolve;});
+    const pending=r.engine.refreshMissing();await new Promise(resolve=>setTimeout(resolve,0));ready(r);const completed=JSON.stringify(r.c.chat);
+    release();await pending;assert.equal(JSON.stringify(r.c.chat),completed);assert.equal(r.engine.snapshot().rebuild,null);assert.equal(r.stats().calls,0);
+});
+
+test('hidden story and players are included without unhiding; typed system notices are not pages',async()=>{
+    const chat=[message('開場',0),message('玩家選擇',1,true),message('角色回應',2),message('另一選擇',3,true),message('後續',4)];
+    for(const m of chat.slice(0,4))m.is_system=true;
+    chat.splice(2,0,{...message('系統說明',99),is_system:true,extra:{type:'help'}});
+    const r=rig(chat);r.c.chatId='loaded-old';r.engine.changed();const before=chat.map(m=>[m.mes,m.is_system]);
+    assert.equal(r.engine.snapshot().total,3);assert.equal(r.engine.snapshot().hidden,2);
+    assert.equal(r.engine.pages()[1].playerInput,'玩家選擇');assert.equal(r.engine.pages()[2].playerInput,'另一選擇');
+    await r.engine.tick();assert.equal(r.stats().calls,0);await r.engine.refreshAll();for(let i=0;i<5;i++)await r.engine.tick();
+    assert.equal(r.stats().calls,3);assert.deepEqual(chat.map(m=>[m.mes,m.is_system]),before);assert.equal(chat[2].extra[KEY],undefined);
+});
+
+test('hidden narrator is a story; native typed notices stay out even if manually unhidden',()=>{
+    const chat=[{...message('旁白劇情'),is_system:true,extra:{type:'narrator'}},...['help','comment','welcome','generic','assistant_note'].map((type,i)=>({...message('通知',i+1),is_system:false,extra:{type}}))];
+    assert.deepEqual(bookPages(chat).map(p=>p.body),['旁白劇情']);
+});
+
+test('missing queue whose last target completed meanwhile does not overwrite or create a job',async()=>{
+    const r=rig();r.engine.toggle(false);r.engine.generationStarted();await r.engine.refreshMissing();ready(r);const before=JSON.stringify(r.c.chat);
+    await r.engine.generationEnded();assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.snapshot().rebuildQueued,false);assert.equal(r.engine.snapshot().rebuild,null);
+});
+
+test('missing task reload and stop preserve completed and partial old summaries without touching excluded pages',async()=>{
+    const r=rig([message('待補第一頁',0),message('待補第二頁',1),message('已完成',2)]);ready(r);r.engine.toggle(false);
+    delete r.c.chat[0].extra[KEY];r.c.chat[1].extra[KEY].done=false;r.c.chat[1].extra[KEY].parts=['有效的舊分段'];const before=JSON.stringify(r.c.chat[2]);
+    await r.engine.refreshMissing();await r.engine.tick();
+    const other=new Engine(r.host,r.cache,r.embedder);other.schedule=()=>{};other.changed();assert.equal(other.snapshot().rebuild.mode,'missing');
+    await other.stopRebuild();assert.equal(r.c.chat[0].extra[KEY].done,true);assert.deepEqual(r.c.chat[1].extra[KEY].parts,['有效的舊分段']);
+    assert.equal(JSON.stringify(r.c.chat[2]),before);await other.tick();assert.equal(r.stats().calls,1);
+});
+
+test('hidden-input restoration invalidates the old visible page summary for missing-only repair',async()=>{
+    const user={...message('此前隱藏的選擇',0,true),is_system:true},answer=message('回應',1),r=rig([user,answer]);
+    answer.extra[KEY]={...newRecord(answer,''),summary:'舊版遺漏背景的摘要',done:true};r.engine.toggle(false);
+    assert.equal(r.engine.snapshot().missing,1);await r.engine.refreshMissing();await r.engine.tick();assert.ok(validRecord(answer,user.mes));
+});
+
+test('hidden recall enters filtered outgoing history exactly once with its player, never notices or saved unhide',async()=>{
+    const r=rig([message('信件給誰',0,true),message('信件交給船長',1),message('其他問題',2,true),message('最近故事',3),message('信件的約定',4,true)]);
+    r.c.chat[0].is_system=true;r.c.chat[1].is_system=true;ready(r);r.host.memory=()=>({recentPages:1,historyBudget:2000});
+    r.host.complete=async()=>'{"ids":["p1","p1"]}';const before=JSON.stringify(r.c.chat);
+    const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system));await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
+    assert.deepEqual(outgoing.map(m=>m.send_date),['t0','t1','t2','t3','t4']);assert.equal(outgoing[1].is_system,false);
+    assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.last.items.filter(i=>i.index===1).length,1);
+    r.c.chat.splice(0,2);r.engine.changed({deleted:true});const next=structuredClone(r.c.chat);await r.engine.intercept(next,10000,()=>assert.fail('abort'),'normal');
+    assert.ok(!next.some(m=>m.mes==='信件交給船長'));
+});
+
+test('hidden recall not selected stays out; hidden background of a recent page remains paired',async()=>{
+    const r=rig([message('舊信件',0),message('隱藏玩家背景',1,true),message('最近角色回應',2)]);
+    r.c.chat[0].is_system=true;r.c.chat[1].is_system=true;ready(r);r.host.memory=()=>({recentPages:1});r.host.complete=async()=>'{"ids":[]}';
+    const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system));await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
+    assert.deepEqual(outgoing.map(m=>m.send_date),['t1','t2']);
+});
+
+test('incomplete catalogue fallback preserves original outgoing history without reviving hidden text',async()=>{
+    const r=rig([message('已整理隱藏正文',0),message('未整理舊正文',1),message('最近正文',2)]);ready(r);r.c.chat[0].is_system=true;delete r.c.chat[1].extra[KEY];r.host.memory=()=>({recentPages:1});
+    const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system)),before=JSON.stringify(outgoing);
+    await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');assert.equal(r.engine.last.mode,'building');assert.equal(JSON.stringify(outgoing),before);
+});
+
+test('hidden unfinished, tool/media, removed swipe and typed notices cannot be recalled',async()=>{
+    const r=rig([message('隱藏未整理',0),message('隱藏圖片',1),message('可見最近',2),message('被 swipe 排除',3)]);ready(r);
+    for(const i of [0,1,3])r.c.chat[i].is_system=true;delete r.c.chat[0].extra[KEY];r.c.chat[1].extra.media=[{url:'fixture'}];
+    r.c.chat.push({...message('系統通知',4),is_system:true,extra:{type:'comment'}});
+    r.host.complete=async()=>assert.fail('No eligible catalogue candidates');
+    const outgoing=structuredClone([r.c.chat[2]]);await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'swipe');assert.equal(outgoing.length,1);
+});
+
 test('duplicate click does not enqueue a second rebuild or multiply API cost',async()=>{
     const r=rig();ready(r);await r.engine.refreshAll();await assert.rejects(r.engine.refreshAll(),/已有重整任務/);
     await r.engine.tick();await r.engine.tick();assert.equal(r.stats().calls,1);

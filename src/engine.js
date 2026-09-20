@@ -1,4 +1,4 @@
-import { KEY, MODEL, bookPages, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
+import { KEY, MODEL, bookPages, isStoryMessage, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
     excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, SUMMARY_SYSTEM, SELECT_SYSTEM } from './core.js';
 import { uid } from './host.js';
 import { mergeUsage, usageView } from './usage.js';
@@ -25,7 +25,7 @@ export class Engine {
         const newest=records.reduce((last,r)=>!last||r.rebuild.requestedAt>last.requestedAt?r.rebuild:last,null);
         if(!newest)return null;
         const group=records.filter(r=>r.rebuild.id===newest.id),pending=group.filter(r=>this.pendingRebuild(r)).length;
-        return {id:newest.id,total:newest.total,done:group.filter(r=>r.done&&!r.rebuild.cancelled).length,pending,
+        return {id:newest.id,mode:newest.mode??'all',total:newest.total,done:group.filter(r=>r.done&&!r.rebuild.cancelled).length,pending,
             cancelled:group.filter(r=>r.rebuild.cancelled).length,removed:Math.max(0,newest.total-group.length),
             vectors:group.filter(r=>r.rebuild.indexed&&!r.rebuild.cancelled).length,vectorFallback:group.some(r=>r.rebuild.vectorFallback),complete:pending===0};
     }
@@ -57,7 +57,7 @@ export class Engine {
             const replaced=replacement&&stamps.length===pending.stamps.length&&index>0&&samePrefix(pending.stamps.slice(0,-1),stamps.slice(0,-1));
             if(!replaced)return;index--;
         }
-        while(index<chat.length&&(chat[index].is_user||chat[index].is_system))index++;
+        while(index<chat.length&&(chat[index].is_user||!isStoryMessage(chat[index])))index++;
         if(index>=chat.length)return;
         const receipt=this.usages.find(x=>x.id===pending.id);if(!receipt)return;
         const result={sourceStamp:stamps[index],index,boundAt:Date.now()};receipt.result=result;this.pendingUsage=null;
@@ -80,9 +80,9 @@ export class Engine {
             playerInput:p.playerInput,title:p.record?.title||p.record?.rebuild?.previous?.title||excerpt(p.body,32),summary:(!p.record?.done?p.record?.rebuild?.previous?.summary:'')||p.record?.summary||p.record?.parts?.join('\n')||'',
             ready:!!p.record?.done,indexed:!!p.record?.done&&this.vectors.has(this.vectorKey(p.record)),pinned:!!p.record?.pinned,
             rebuilding:this.pendingRebuild(p.record),rebuilt:!!p.record?.done&&!!p.record?.rebuild&&!p.record.rebuild.cancelled,previousSummary:!p.record?.done&&!!p.record?.rebuild?.previous?.summary,
-            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body,p.record?.chunkSize??3600).length,edited:!!p.record?.edited,automatic:this.autoPages.has(p.message)}));
+            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body,p.record?.chunkSize??3600).length,edited:!!p.record?.edited,hidden:!!p.message.is_system,automatic:this.autoPages.has(p.message)}));
         const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role,true)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
-        const chat=this.host.context().chat??[],usageRecords=this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(chat),chat.map(m=>m.is_system?'system':m.is_user?'user':'assistant')).filter(x=>x.resultState==='present'):[];
+        const chat=this.host.context().chat??[],usageRecords=this.usageIdentity===this.host.identity()?usageView(this.usages,chatStamps(chat),chat.map(m=>!isStoryMessage(m)?'system':m.is_user?'user':'assistant')).filter(x=>x.resultState==='present'):[];
         const total=entries.length,ready=entries.filter(p=>p.ready).length,indexed=entries.filter(p=>p.indexed).length,rebuild=this.rebuildState();
         const automaticEntries=entries.filter((_,i)=>this.autoPages.has(pages[i].message)),automaticTotal=automaticEntries.length;
         const automaticReady=automaticEntries.filter(p=>p.ready).length,automaticIndexed=automaticEntries.filter(p=>p.indexed).length;
@@ -94,10 +94,10 @@ export class Engine {
         const auto={active:automatic&&automaticTotal>0&&(automaticWorking||pendingSummaries>0||pendingVectors>0),available:automatic,total:automaticTotal,ready:automaticReady,indexed:automaticIndexed,phase,
             done:phase==='vector'?automaticIndexed:automaticReady,pendingSummaries,pendingVectors,manualPending,catalogueTotal:total,current:this.work?{...this.work}:null,
             waitingForGeneration:this.generating,complete:automaticTotal>0&&automaticReady===automaticTotal&&automaticIndexed===automaticTotal};
-        return {entries,total,ready,indexed,
+        return {entries,total,ready,indexed,missing:total-ready,hidden:entries.filter(p=>p.hidden).length,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
-            resetting:this.resetting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),generating:this.generating,chatIdentity:this.host.identity(),auto,
+            resetting:this.resetting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
             usages:usageRecords,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
             apiMode:this.host.settings().apiMode??'main',mainModel:this.host.helper?.('summary')?.model??'',memory:this.host.memory?.(),advanced:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.advanced?.(role)])),
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
@@ -160,7 +160,7 @@ export class Engine {
         if(this.queuedRebuild!==request||this.generating||this.stopping||this.resetting||this.disposed)return;
         this.queuedRebuild=null;
         if(request.identity!==this.host.identity()){this.emit();return;}
-        try{await this.queueRebuild(this.pages());}catch(e){
+        try{await this.queueRebuild(this.rebuildTargets(request.mode),request.mode);}catch(e){
             if(request.identity!==this.host.identity())return;
             this.warning=String(e.message??e);this.setStatus('未能啟動已排隊的重新整理；請檢查提示後再按一次');
         }
@@ -186,17 +186,22 @@ export class Engine {
         const r=structuredClone(p.record??newRecord(p.message,p.playerInput));r.pinned=!r.pinned;await this.savePage(p,r);
     }
     async refresh(index) {return this.queueRebuild([this.resolvePage(index)]);}
-    async refreshAll(identity=this.host.identity()) {
+    rebuildTargets(mode='all'){return this.pages().filter(p=>mode!=='missing'||!p.record?.done);}
+    async refreshAll(identity=this.host.identity()) {return this.requestRebuild('all',identity);}
+    async refreshMissing(identity=this.host.identity()) {return this.requestRebuild('missing',identity);}
+    async requestRebuild(mode,identity) {
         await this.reconcileGeneration();
         if(identity!==this.host.identity())throw new Error('聊天已切換，請在目前聊天重新操作');
         if(this.stopping||this.resetting||this.rebuildState()?.pending||this.queuedRebuild)throw new Error('已有重整任務，請等完成或先停止本次重整');
-        this.validateRebuild(this.pages());
+        const pages=this.rebuildTargets(mode);
+        if(mode==='missing'&&!pages.length){this.setStatus('沒有未整理的正文；已有摘要未改動');return;}
+        this.validateRebuild(pages);
         if(this.generating){
-            this.queuedRebuild={identity,requestedAt:Date.now()};this.warning='';
-            this.log('已接受一鍵重新整理；本次角色回覆完成後開始');
-            this.setStatus('一鍵重新整理已排隊；等待本次角色回覆完成');return;
+            this.queuedRebuild={identity,mode,requestedAt:Date.now()};this.warning='';
+            this.log(`${mode==='missing'?'整理未整理的':'重新整理全部'}已接受；本次角色回覆完成後開始`);
+            this.setStatus(`${mode==='missing'?'整理未整理的':'一鍵重新整理'}已排隊；等待本次角色回覆完成`);return;
         }
-        return this.queueRebuild(this.pages());
+        return this.queueRebuild(pages,mode);
     }
     async persistRebuild(pairs,validate=()=>{}) {
         const pages=pairs.map(([p])=>p),original=pairs.map(([p])=>p.message.extra?.[KEY]);
@@ -220,9 +225,10 @@ export class Engine {
         if(this.host.context().mainApi!=='openai')throw new Error('請先使用酒館「聊天補全」模式');
         const helper=this.host.helper?.('summary');if(helper&&helper.connection!=='main'&&!helper.model)throw new Error('請先在記憶助手填寫總結模型');
     }
-    queueRebuild(pages) {
-        const operation={identity:pages[0]?.identity,pages,cancelled:false};
-        if(this.resetting||this.stopping||this.rebuildState()?.pending)return Promise.reject(new Error('已有重整任務，請等完成或先停止本次重整'));
+    queueRebuild(pages,mode='all') {
+        const operation={identity:pages[0]?.identity,pages,mode,cancelled:false};
+        if(this.resetting||this.stopping||this.rebuildState()?.pending||this.queuedRebuild)return Promise.reject(new Error('已有重整任務，請等完成或先停止本次重整'));
+        if(mode==='missing'&&!pages.length){this.setStatus('沒有未整理的正文；已有摘要未改動');return Promise.resolve();}
         this.rebuildOperation=operation;
         const task=this.createRebuild(pages,operation);this.rebuildSetup=task;
         return task.finally(()=>{if(this.rebuildOperation===operation)this.rebuildOperation=null;});
@@ -236,10 +242,15 @@ export class Engine {
             await this.reconcileGeneration();validate();this.cancel();await this.idle;await this.maintenance;validate();
             locked=await this.cache.lease(identity,this.owner);if(!locked)throw new Error('另一個視窗正在整理，請稍後再試；原摘要未改動');
             validate();
-            const live=this.assertPages(pages),job={id:uid(),requestedAt:[...live.values()].reduce((n,p)=>Math.max(n,(p.record?.rebuild?.requestedAt??0)+1),Date.now()),total:pages.length};
+            const live=this.assertPages(pages);
+            // A background summary may have completed while we waited for idle/lease.
+            if(operation.mode==='missing')pages=pages.filter(p=>!live.get(p.message)?.record?.done);
+            if(!pages.length){this.setStatus('沒有未整理的正文；已有摘要未改動');return;}
+            const job={id:uid(),mode:operation.mode,requestedAt:[...live.values()].reduce((n,p)=>Math.max(n,(p.record?.rebuild?.requestedAt??0)+1),Date.now()),total:pages.length};
             const pairs=pages.map(p=>{const current=live.get(p.message)?.record;
                 const previous=current?structuredClone(current):null;if(previous)delete previous.rebuild;
-                const r={...newRecord(p.message,p.playerInput),pinned:!!current?.pinned,revision:uid(),rebuild:{...job,previous}};return [p,r];});
+                const base=operation.mode==='missing'&&current?structuredClone(current):newRecord(p.message,p.playerInput);
+                const r={...base,pinned:!!current?.pinned,revision:uid(),rebuild:{...job,previous}};return [p,r];});
             await this.persistRebuild(pairs,validate);
             if(operation.cancelled||identity!==this.host.identity()||this.disposed)return;
             this.invalidateTrace();this.notice='記憶正在重整；待發送選頁已失效，已發送紀錄保留。';
@@ -383,18 +394,36 @@ export class Engine {
             if(identity!==this.host.identity()||epoch!==this.epoch||current.length!==objects.length||current.some((m,i)=>m!==objects[i])||!samePrefix(stamps,chatStamps(current)))throw new DOMException('Chat changed','AbortError');};
         try{
             active();
-            const original=[...chat],cleaned=original.map(m=>m.is_user?m:{...m,mes:cleanBody(m.mes)}),costs=[];
+            const incoming=[...chat],sourcePages=this.pages(),sourceChat=this.host.context().chat??[];
+            const original=[...incoming],present=new Set(incoming.map(m=>this.sourceIndex(m))),boundary=Math.max(...present);
+            // ST removes hidden messages before this hook. Add only already-indexed
+            // story sources to the candidate pool, never unhide the saved messages.
+            // Visible messages removed by earlier hooks, and swipe's removed reply,
+            // remain excluded. Hidden pages are recall candidates, not recent history.
+            for(const p of sourcePages){
+                if(!p.record?.done||p.index>boundary||(type==='swipe'&&p.index===sourceChat.length-1)||(!present.has(p.index)&&!p.message.is_system))continue;
+                const indices=[...p.userIndices,p.index];
+                if(indices.some(i=>sourceChat[i].extra?.tool_invocations?.length||sourceChat[i].extra?.media?.length))continue;
+                for(const i of indices)if(!present.has(i)&&sourceChat[i].is_system){
+                    original.push({...sourceChat[i],is_system:false});present.add(i);
+                }
+            }
+            const order=m=>{const i=this.sourceIndex(m);return i<0?Number.MAX_SAFE_INTEGER:i;};
+            original.sort((a,b)=>order(a)-order(b));
+            const incomingSet=new Set(incoming),cleaned=original.map(m=>m.is_user?m:{...m,mes:cleanBody(m.mes)}),costs=[];
             for(const m of cleaned){active();costs.push(await this.host.count(m.mes));}
             active();
             if(original.some(m=>this.sourceIndex(m)<0&&!(options.preview&&m.send_date==='folio-preview')))throw new DOMException('Ambiguous or deleted message','AbortError');
             const memory=this.host.memory?.()??{},budget=budgetFor(contextSize);
             if(memory.historyBudget){budget.history=Math.min(budget.history,memory.historyBudget);budget.recent=Math.floor(budget.history*.6);budget.recall=budget.history-budget.recent;}
-            const recent=recentPages(cleaned,costs,budget.recent,memory.recentPages??0);
-            const sourcePages=this.pages();
+            const incomingPositions=original.map((m,i)=>incomingSet.has(m)?i:-1).filter(i=>i>=0);
+            const recent=recentPages(incomingPositions.map(i=>cleaned[i]),incomingPositions.map(i=>costs[i]),budget.recent,memory.recentPages??0);
+            recent.picked=new Set([...recent.picked].map(i=>incomingPositions[i]));
             const entries=bookPages(cleaned).map(p=>{
                 const sourceIndex=this.sourceIndex(original[p.index]),source=sourcePages.find(x=>x.index===sourceIndex),r=source?.record;
                 return {...p,i:p.index,index:sourceIndex,id:`p${sourceIndex}`,number:source?.number??p.number,title:r?.title||excerpt(p.body,32),summary:r?.summary??'',ready:!!r?.done,pinned:!!r?.pinned,record:r};
             });
+            for(const p of entries)if(recent.picked.has(p.i))for(const i of p.userIndices)if(!recent.picked.has(i)){recent.picked.add(i);recent.used+=costs[i];}
             const older=entries.filter(p=>!recent.picked.has(p.i));
             const query=options.query||cleanBody(original.findLast(m=>m.is_user)?.mes??original.at(-1).mes);
             const trace={id:uid(),stamps,createdAt:Date.now(),preview:!!options.preview,query,mode:'recent',budget:budget.history,beforeTokens:costs.reduce((a,b)=>a+b,0),candidates:[],items:[],skipped:[]};
@@ -402,7 +431,7 @@ export class Engine {
             const reasons=new Map([...chosen].map(i=>[i,cleaned[i].is_user?'近期玩家輸入':'近期正文']));
             if(older.some(p=>!p.ready)){
                 trace.mode='building';warning=`${older.filter(p=>!p.ready).length} 頁舊正文尚未完成摘要；這次保留原歷史，不用正文節錄冒充目錄`;
-                chosen=new Set(original.map((_,i)=>i));used=trace.beforeTokens;this.schedule();
+                chosen=new Set(incomingPositions);used=incomingPositions.reduce((n,i)=>n+costs[i],0);this.schedule();
             }else if(older.length){
                 this.setStatus('正在用小摘要查頁；選中後才取回正文');trace.mode='hybrid';
                 for(const p of older){

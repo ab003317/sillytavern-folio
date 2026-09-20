@@ -63,8 +63,12 @@ export function mountUI(engine){
         const section=el('div','folio-rebuild'),bar=el('div','folio-toolbar'),detail=el('p','folio-muted'),progress=el('progress'),outcome=el('p','folio-rebuild-status');
         outcome.setAttribute('role','status');progress.setAttribute('aria-label','本次重整進度');
         const all=button('一鍵重新整理全部',perform(()=>engine.refreshAll(state.chatIdentity)),'folio-primary');
+        const missing=button('一鍵整理未整理的',perform(()=>engine.refreshMissing(state.chatIdentity)));
+        const scope=el('p','folio-rebuild-scope');
+        all.title='重做全部正文的摘要與索引，包含已完成及人工修改的摘要';
+        missing.title='只補缺失、失效或未完成的摘要；保留已有有效摘要';
         const stop=button('停止本次重整',perform(()=>engine.stopRebuild())),retry=button('立即重試',()=>engine.retry());
-        bar.append(all,stop,retry);section.append(bar,detail,progress,outcome);target.append(section);rebuildPanels.push({all,stop,retry,detail,progress,outcome});
+        bar.append(all,missing,info('全部：重做所有劇情頁，包含人工修改的摘要。未整理：只補缺失、正文或玩家背景變更後失效的摘要，分段未完成則接續；只有向量未載入不會重做摘要。兩者都包含隱藏正文，不含系統通知，不受目錄搜尋／篩選限制。新回覆自動記憶關閉時也能手動執行。'),stop,retry);section.append(bar,scope,detail,progress,outcome);target.append(section);rebuildPanels.push({all,missing,scope,stop,retry,detail,progress,outcome});
     }
     const runBody=el('div'),runActivity=fold(el,'最近動作'),activityBody=el('div');runActivity.append(activityBody);panels.run.prepend(runBody);panels.run.append(runActivity);
     const memoryOptions=mountMemoryOptions(engine,panels.pages,{el,button,info});
@@ -95,7 +99,7 @@ export function mountUI(engine){
             return `這批新回覆已完成 · ${counts}${a.manualPending?` · 舊聊天另有 ${a.manualPending} 頁只會在手動重整時處理`:''}`;
         }
         if(!state.enabled)return '新回覆自動記憶已暫停；手動一鍵重整仍可使用。';
-        if(a?.manualPending)return `舊聊天有 ${a.manualPending} 頁尚未整理；不會自動處理。需要時請按下方「一鍵重新整理全部」。`;
+        if(a?.manualPending)return `舊聊天有 ${a.manualPending} 頁尚未整理；不會自動處理。需要時請按下方「一鍵整理未整理的」。`;
         if(!a?.catalogueTotal)return '目前沒有角色正文；新回覆出現後才會自動整理。';
         return '舊聊天保持原狀；只會自動整理接下來新生成的角色回覆。';
     }
@@ -106,7 +110,7 @@ export function mountUI(engine){
     function rebuildText(job=state.rebuild){
         if(state.stopping)return '正在中止本次助手工作；保留完成頁，未完成頁恢復原摘要。';
         if(state.stopFailed)return '停止狀態未能保存；本視窗不再發出重整請求。請按「重試停止」，保存成功前刷新可能恢復未完成任務。';
-        if(state.rebuildQueued)return '已接受操作；本次角色回覆完成後，會重新整理目前聊天。';
+        if(state.rebuildQueued)return `已接受操作；本次角色回覆完成後，會${state.rebuildMode==='missing'?'只整理未整理的正文，保留已有摘要':'重新整理全部正文'}。`;
         if(state.resetting&&!job)return '正在保存重新整理任務；正文不會被刪除。';
         if(!job)return '準備重新整理目前聊天。';
         const counts=`摘要 ${job.done}/${job.total} 頁 · 向量 ${job.vectors}/${job.total} 頁`;
@@ -161,7 +165,7 @@ export function mountUI(engine){
         if(!autoCompletion)autoPopup.hidden=true;
     }
     function renderRun(){
-        const intro=heading(state.rebuild?.pending?'正在重新整理書頁':state.enabled?'新回覆自動記，舊聊天由你決定':'新回覆自動記憶已暫停','自動開關只處理開啟後新生成的角色回覆。既有聊天不會自動發出模型請求；只有你按「一鍵重新整理全部」才處理舊頁。');
+        const intro=heading(state.rebuild?.pending?'正在重新整理書頁':state.enabled?'新回覆自動記，舊聊天由你決定':'新回覆自動記憶已暫停','自動開關只處理開啟後的新回覆。舊聊天由你選擇「全部重做」或「只補未整理」，也可以單頁處理。');
         const dashboard=el('div','folio-dashboard'),meters=el('div','folio-meters');
         meters.append(ring('摘要目錄',state.ready,state.total,'完成小摘要的正文頁數。提取模型讀目錄來選頁，選中後取回完整正文。'),ring('本機向量',state.indexed,state.total,'已載入向量索引的正文頁數。用內建模型在本機檢索；尚未就緒時可能暫用文字匹配。','folio-meter-vector'));
         const latest=state.usages?.[0],receipt=el('section','folio-recent');receipt.append(heading('最近取用（現存回覆）','只看仍在目前聊天裡的角色回覆。刪除最新回覆後，這裡會自動回到上一筆仍存在的舊取用。'),el('p','folio-recent-time',latest?dateStamp(latest.final.observedAt):'尚無對應現存回覆的紀錄'));
@@ -182,7 +186,7 @@ export function mountUI(engine){
             const b=button('',()=>{selected=e.ref;editing=false;renderPages();if(matchMedia('(max-width: 640px)').matches)reader.scrollIntoView({block:'start',behavior:'instant'});},'folio-page-link');
             b.setAttribute('aria-current',String(e.ref.handle===selected?.handle));b.dataset.index=String(e.index);
             const pendingLabel=e.automatic?`新回覆整理中：摘要 ${e.parts}/${e.totalParts} 段`:'舊聊天未整理；只會在手動重整時處理';
-            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'尚無小摘要；正文已保留'),el('span','folio-page-state',e.rebuilding?e.previousSummary?'重整中，暫顯示舊摘要':`重整中：摘要 ${e.parts}/${e.totalParts} 段`:e.ready?e.indexed?'摘要與向量已就緒':'摘要完成，索引待載入':pendingLabel));fragment.append(b);
+            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.hidden?' · 隱藏正文':''}${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'尚無小摘要；正文已保留'),el('span','folio-page-state',e.rebuilding?e.previousSummary?'重整中，暫顯示舊摘要':`重整中：摘要 ${e.parts}/${e.totalParts} 段`:e.ready?e.indexed?'摘要與向量已就緒':'摘要完成，索引待載入':pendingLabel));fragment.append(b);
         }
         if(entries.length>shown)fragment.append(button('載入更多書頁',()=>{shown+=60;renderPages();}));
         if(!entries.length)fragment.append(el('p','folio-empty','沒有符合的書頁。開啟一段聊天，或換個詞搜尋。'));
@@ -192,7 +196,7 @@ export function mountUI(engine){
         const openDetails=new Set([...reader.querySelectorAll('details[open]')].map(n=>n.firstElementChild?.textContent));
         const nodes=[el('p','folio-page-meta',`第 ${e.number} 頁 · ${e.name} · 聊天第 ${e.index+1} 則`),el('h3','folio-reader-title',e.title)];
         if(e.playerInput)nodes.push(disclosure('當時的玩家輸入',e.playerInput));
-        nodes.push(heading('小摘要','助手與向量檢索讀的是這段目錄。它用來選頁，不會取代選中的正文。'),el('p','folio-summary-text',e.summary||(e.automatic?'新回覆正在整理，完成後會自動更新。':'這是舊聊天，不會自動整理。可按「重新整理此頁」或「一鍵重新整理全部」。')),heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body));
+        nodes.push(heading('小摘要','助手與向量檢索讀的是這段目錄。它用來選頁，不會取代選中的正文。'),el('p','folio-summary-text',e.summary||(e.automatic?'新回覆正在整理，完成後會自動更新。':'這是舊聊天，不會自動整理。可按「重新整理此頁」或「一鍵整理未整理的」。')),heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body));
         const actions=el('div','folio-toolbar'),manage=fold(el,'管理這一頁'),manageActions=el('div','folio-toolbar');
         const refresh=button(e.rebuilding?'正在重整此頁…':'重新整理此頁',perform(()=>engine.refresh(e.ref)),'folio-primary');refresh.disabled=!!state.resetting||!!state.rebuild?.pending||!!state.generating;
         actions.append(refresh);manageActions.append(button(e.pinned?'取消釘選':'釘選這頁',perform(()=>engine.pin(e.ref))),button('修改小摘要',()=>{
@@ -235,9 +239,13 @@ export function mountUI(engine){
     function renderRebuild(){
         const job=state.rebuild;
         for(const f of rebuildPanels){
-            f.all.disabled=state.stopping||state.resetting||!!job?.pending||state.rebuildQueued;
-            f.all.textContent=state.stopping?'正在停止…':state.resetting?'正在保存重整任務…':job?.pending?'重新整理進行中':state.rebuildQueued?'已排隊，等待回覆完成':'一鍵重新整理全部';
-            f.detail.textContent=state.rebuildQueued?'已接受操作；這次角色回覆完成後自動開始，不需要再按一次。':`重做目前聊天的 ${state.total} 頁摘要與向量索引，包含人工修改的摘要；會呼叫總結模型並可能收費。不刪正文，「新回覆自動記憶」關閉時也能執行。${state.generating?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':''}`;
+            const locked=state.stopping||state.resetting||!!job?.pending||state.rebuildQueued;
+            const working=state.stopping?'正在停止…':state.resetting?'正在保存重整任務…':job?.pending?'重新整理進行中':state.rebuildQueued?'已排隊，等待回覆完成':'';
+            f.all.disabled=locked||!state.total;f.missing.disabled=locked||!state.missing;
+            f.all.textContent=state.rebuildMode!=='missing'&&working?working:'一鍵重新整理全部';
+            f.missing.textContent=state.rebuildMode==='missing'&&working?working:'一鍵整理未整理的';
+            f.scope.textContent=`全部重做：${state.total} 頁（會覆蓋已有摘要）　僅補未整理：${state.missing} 頁（保留已有有效摘要）`;
+            f.detail.textContent=(state.rebuildQueued?rebuildText():`包含 ${state.hidden} 頁隱藏正文，不含系統通知。不刪正文、不取消隱藏；會呼叫總結模型並可能收費。`)+(state.generating&&!state.rebuildQueued?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':'');
             f.stop.hidden=!(state.stopping||state.resetting||state.rebuildQueued||job?.pending);f.stop.disabled=!!state.stopping;f.stop.textContent=state.stopping?'正在停止…':state.stopFailed?'重試停止':state.rebuildQueued?'取消排隊':'停止本次重整';f.retry.hidden=state.stopFailed||state.stopping||!job?.pending||!state.warning;f.retry.disabled=state.busy;
             f.progress.hidden=state.rebuildQueued||(state.resetting&&!job?.pending)||!job;setRebuildProgress(f.progress,job);
             f.outcome.textContent=state.stopping||state.stopFailed?rebuildText(job):state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':state.resetting&&!job?.pending?'正在建立手動重新整理任務。':job?`本次重整：摘要 ${job.done}/${job.total} 頁，向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已完成，向量暫用文字檢索。':job.cancelled?'已停止。':'已完成。'}`:'';

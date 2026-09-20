@@ -76,10 +76,16 @@ export function newRecord(message, playerInput = '') {
     return { v: VERSION, hash: s.hash, source: s.source, parts: [], summary: '', title:'', done: false, pinned: false };
 }
 
+// In ST is_system is also the ordinary message's hide flag. Native notices carry
+// an extra.type; narrator is story, unlike help/comment/welcome/system notices.
+export function isStoryMessage(message) {
+    return !!message && (!message.extra?.type || message.extra.type === 'narrator');
+}
+
 export function bookPages(chat) {
     const pages = []; let inputs = [];
     for (let index = 0; index < chat.length; index++) {
-        const message = chat[index]; if (message.is_system) continue;
+        const message = chat[index]; if (!isStoryMessage(message)) continue;
         if (message.is_user) { inputs.push(index); continue; }
         const playerInput = inputs.map(i=>cleanBody(chat[i].mes)).join('\n');
         const {body,source,hash} = sourceOf(message,playerInput);
