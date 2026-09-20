@@ -618,6 +618,14 @@ test('one assistant body is one page; player input is context, never an independ
     await r.engine.tick();await r.engine.tick();assert.equal(r.engine.snapshot().total,1);assert.equal(request.playerInput,'我要把信送走');assert.equal(request.text,'船長交出了藍色信件。');assert.equal(r.c.chat[0].extra[KEY],undefined);assert.equal(r.engine.snapshot().ready,1);
     r.c.chat[0].mes='我要拒絕收信';assert.equal(r.engine.snapshot().ready,0,'changed player context invalidates only its page');
 });
+test('default summary receives only adjacent raw context and saves evidence anchored to current text',async()=>{
+    const before='上一頁由阿璃守在鐘樓，洛嵐站在門外。',current='她把銀色鑰匙交給洛嵐，但沒有離開鐘樓。';
+    const r=rig([message(before,0),message('追問鑰匙的去向',1,true),message(current,2)]);ready(r);
+    bookPages(r.c.chat)[0].record.summary='錯誤的舊摘要不應成為上下文';delete r.c.chat[2].extra[KEY];let request;
+    r.host.advanced=()=>({prompt:''});r.host.complete=async(_system,prompt)=>{request=JSON.parse(prompt);return JSON.stringify({title:'銀色鑰匙',sections:{entities:[{entry:'洛嵐：收到銀色鑰匙',evidence:'銀色鑰匙交給洛嵐'}],events:[{entry:'主體不明：把銀色鑰匙交給洛嵐',evidence:'她把銀色鑰匙交給洛嵐'}],relations:[],open:[]}});};
+    await r.engine.tick();assert.equal(request.contextBefore,before);assert.equal(request.playerInput,'追問鑰匙的去向');assert.equal(request.text,current);assert.ok(!request.contextBefore.includes('錯誤的舊摘要'));
+    assert.match(bookPages(r.c.chat)[1].record.summary,/主體不明/);
+});
 test('old completed v1 assistant summaries migrate without paid regeneration',async()=>{
     const r=rig([message('玩家背景',0,true),message('船長交付信件。',1)]),m=r.c.chat[1];
     const source=sha256(JSON.stringify([1,false,m.name,m.mes]));m.extra[KEY]={v:1,hash:source,source,parts:['已有摘要'],summary:'已有摘要',done:true,pinned:true};

@@ -414,8 +414,10 @@ export class Engine {
             this.work={stage:'summary',page:p.number,part:r.parts.length+1,total:parts.length};
             this.setStatus(`正在整理第 ${p.number} 頁（${r.parts.length+1}/${parts.length} 段）`);active(p);
             if(parts[r.parts.length]!==undefined){
-                const raw=await this.host.complete(SUMMARY_SYSTEM,JSON.stringify({speaker:p.name,playerInput:excerpt(p.playerInput,1200),text:parts[r.parts.length]}),{signal});active(p);
-                const parsed=parsePageSummary(raw);r.parts.push(parsed.summary);r.title||=parsed.title;
+                const partIndex=r.parts.length,text=parts[partIndex],usesDefault=typeof this.host.advanced==='function'&&!this.host.advanced('summary').prompt;
+                const previous=partIndex?parts[partIndex-1]:pages.filter(page=>page.index<p.index).at(-1)?.body??'';
+                const raw=await this.host.complete(SUMMARY_SYSTEM,JSON.stringify({speaker:p.name,contextBefore:usesDefault?String(previous).slice(-600):'',playerInput:excerpt(p.playerInput,600),text}),{signal});active(p);
+                const parsed=parsePageSummary(raw,text,{requireEvidence:usesDefault});r.parts.push(parsed.summary);r.title||=parsed.title;
             }
             Object.assign(r,{summary:r.parts.join('\n'),done:r.parts.length===parts.length,model:this.host.models?.summary??this.host.model,updatedAt:Date.now()});
             if(r.done&&r.rebuild)delete r.rebuild.previous;
@@ -597,7 +599,7 @@ export class Engine {
             const catalogue=[{id:'letter',summary:'船長交付藍色信件，約定冬天前送到山城。'},{id:'dinner',summary:'旅人在街市吃了一碗牛肉麵。'}];
             const input=selection?{query:'連線測試：船長的信應在甚麼時候送到哪裡？',catalogue}:{speaker:'連線測試',playerInput:'請保存信件。',text:'船長將藍色信件交給旅人，約定冬天前送到山城。'};
             const raw=await this.host.complete(selection?SELECT_SYSTEM:SUMMARY_SYSTEM,JSON.stringify(input),{signal:controller.signal,selection});controller.signal.throwIfAborted();
-            let parsed;if(selection){const ids=parseSelection(raw,catalogue);if(!ids.includes('letter')||ids.includes('dinner'))throw new Error('模型有回應，但未通過提取測試：應選信件，不應選晚餐');parsed={summary:'成功從兩段小摘要選出信件正文。',ids};}else parsed=parsePageSummary(raw);
+            let parsed;if(selection){const ids=parseSelection(raw,catalogue);if(!ids.includes('letter')||ids.includes('dinner'))throw new Error('模型有回應，但未通過提取測試：應選信件，不應選晚餐');parsed={summary:'成功從兩段小摘要選出信件正文。',ids};}else parsed=parsePageSummary(raw,input.text,{requireEvidence:typeof this.host.advanced==='function'&&!this.host.advanced('summary').prompt});
             if(this.connectionTests[role]===pending)this.connectionTests[role]={ok:true,model:this.host.models?.[role]??this.host.model,ms:Math.round(performance.now()-start),...parsed};
         }catch(e){if(this.connectionTests[role]===pending)this.connectionTests[role]=controller.signal.aborted?null:{ok:false,error:String(e.message??e)};}
         finally{if(this.selectController===controller)this.selectController=null;this.emit();this.schedule();}

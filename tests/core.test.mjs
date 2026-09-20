@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {KEY, cleanBody, splitBody, sourceOf, newRecord, validRecord, parseSummary, parseSelection, rankCandidates,
+import {KEY, cleanBody, splitBody, sourceOf, newRecord, validRecord, parseSummary, parsePageSummary, summarySections, parseSelection, rankCandidates,
     cosine, estimatedTokens, budgetFor, recentIndices, chooseModel, summaryChunks} from '../src/core.js';
 import {WordPiece} from '../src/tokenizer.js';
 import {sha256} from '../src/hash.js';
@@ -36,6 +36,16 @@ test('summary JSON is validated and HTML never needed',()=>{
     assert.throws(()=>parseSelection('{"ids":"p0"}',[]));
     assert.deepEqual(parseSelection('{"ids":["p1","invented","p1"]}',[{id:'p1'}]),['p1']);
     assert.deepEqual(parseSelection('{"ids":[]}',[{id:'p1'}]),[]);
+});
+test('structured summary keeps named subjects in separate catalogue rows',()=>{
+    const source='阿璃是銀鈴保管人。洛嵐持有地圖碎片。阿璃把地圖碎片交給洛嵐。洛嵐因沈鶴隱瞞真相而與沈鶴決裂。阿璃須在冬至前歸還銀鈴。';
+    const raw=JSON.stringify({title:'銀鈴的持有人',sections:{entities:[{entry:'阿璃：銀鈴保管人',evidence:'阿璃是銀鈴保管人'},{entry:'洛嵐：地圖碎片持有人',evidence:'洛嵐持有地圖碎片'}],events:[{entry:'阿璃：把地圖碎片交給洛嵐',evidence:'阿璃把地圖碎片交給洛嵐'}],relations:[{entry:'洛嵐 → 沈鶴：因隱瞞真相而決裂',evidence:'洛嵐因沈鶴隱瞞真相而與沈鶴決裂'}],open:[{entry:'阿璃：須在冬至前歸還銀鈴',evidence:'阿璃須在冬至前歸還銀鈴'}]}}),parsed=parsePageSummary(raw,source,{requireEvidence:true});
+    assert.equal(parsed.title,'銀鈴的持有人');assert.equal(parsed.summary,'人物與實體：阿璃：銀鈴保管人；洛嵐：地圖碎片持有人\n事件與結果：阿璃：把地圖碎片交給洛嵐\n關係與狀態：洛嵐 → 沈鶴：因隱瞞真相而決裂\n目標與線索：阿璃：須在冬至前歸還銀鈴');
+    assert.deepEqual(summarySections(parsed.summary).map(x=>x.label),['人物與實體','事件與結果','關係與狀態','目標與線索']);
+    assert.deepEqual(summarySections('人物与实体：阿璃：持有银铃\n事件与结果：洛岚：取得碎片').map(x=>x.label),['人物與實體','事件與結果']);
+    assert.throws(()=>parsePageSummary(JSON.stringify({title:'污染',sections:{events:[{entry:'沈鶴：偷走銀鈴',evidence:'沈鶴偷走銀鈴'}]}}),'阿璃打開房門。',{requireEvidence:true}),/無法在本頁正文中核對/);
+    assert.throws(()=>parsePageSummary(JSON.stringify({title:'無證據',sections:{events:['阿璃：打開房門']}}),'阿璃打開房門。',{requireEvidence:true}),/無法在本頁正文中核對/);
+    assert.throws(()=>parsePageSummary('{"title":"舊格式","summary":"上一頁的事件"}','本頁正文。',{requireEvidence:true}),/結構化摘要/);
 });
 test('hybrid search ranks names and semantic paraphrases',()=>{
     const rows=[{id:'sea',index:0,summary:'在港口碼頭等待船長歸來',vectors:[[1,0]]},

@@ -36,7 +36,8 @@ def route_request(route):
             ids=[e['id'] for e in data['catalogue'] if '藍色' in e['summary'] or '冬天' in e['summary']][:2]
             answer={'ids':ids}
         else:
-            answer={'summary':data['text'][:180]}
+            evidence=data['text'][:80]
+            answer={'title':'結構化測試書頁','sections':{'entities':[{'entry':'船長：本頁角色','evidence':evidence}],'events':[{'entry':'船長：'+data['text'][:150],'evidence':evidence}],'relations':[{'entry':'船長 → 玩家角色（你）：保留正文所述關係','evidence':evidence}],'open':[{'entry':'船長：正文提及的約定仍待完成','evidence':evidence}]}}
         route.fulfill(status=200,body=json.dumps({'choices':[{'message':{'content':json.dumps(answer,ensure_ascii=False)}}]}),content_type='application/json');return
     relative=path.removeprefix('/folio/') if path.startswith('/folio/') else path.lstrip('/')
     file=(ROOT/relative).resolve()
@@ -74,13 +75,18 @@ with sync_playwright() as p:
         assert '舊聊天有 3 頁尚未整理' in page.locator('.folio-auto-run').inner_text()
         page.get_by_role('button',name='一鍵重新整理全部',exact=True).first.click()
         page.wait_for_function('testContext.chat.filter(m=>!m.is_user).every(m=>m.extra.folio_memory?.done)',timeout=120000)
+        page.wait_for_function('document.querySelector(".folio-auto-popup").hidden',timeout=15000)
         assert len([c for c in calls if 'text' in json.loads(c['messages'][-1]['content'])])==3,len(calls)
         assert page.evaluate('testContext.chatCompletionSettings.custom_model')=='fixture-large'
         assert not page.evaluate('JSON.stringify(testContext.chat.map(m=>m.extra.folio_memory)).includes("不應被保存的推理")')
         page.get_by_role('tab',name='書頁目錄').click()
         page.locator('.folio-page-link').first.click()
+        assert page.locator('.folio-summary-row').count()==4
+        assert page.locator('.folio-summary-row dt').all_text_contents()==['人物與實體','事件與結果','關係與狀態','目標與線索']
+        page.locator('.folio-summary-sheet').scroll_into_view_if_needed()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'desktop.png'))
         page.set_viewport_size({'width':390,'height':844})
+        page.locator('.folio-summary-sheet').scroll_into_view_if_needed()
         page.locator('.folio-dialog').screenshot(path=str(OUT/'mobile.png'))
         assert page.locator('.folio-dialog').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
         page.get_by_role('searchbox').fill('藍色')

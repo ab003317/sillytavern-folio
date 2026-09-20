@@ -1,6 +1,7 @@
 import { mountApiForms } from './api-ui.js';
 import { USAGE_LIMIT, usageOverview, playerOwner } from './usage.js';
 import { fold, mountMemoryOptions } from './settings-ui.js';
+import { summarySections } from './core.js';
 let nextId=0;
 function el(tag,cls='',text=''){const n=document.createElement(tag);n.className=cls;if(text)n.textContent=text;return n;}
 function button(text,action,cls=''){const n=el('button',cls,text);n.type='button';n.addEventListener('click',action);return n;}
@@ -10,7 +11,14 @@ function info(text){
     b.setAttribute('aria-label','說明');b.setAttribute('aria-expanded','false');b.setAttribute('aria-controls',tip.id);wrap.append(b,tip);return wrap;
 }
 function heading(text,help){const n=el('h3','',text);if(help)n.append(info(help));return n;}
-function disclosure(label,text,cls=''){const n=el('details',cls);n.append(el('summary','',label),el('div','folio-prose',text));return n;}
+function disclosure(label,content,cls=''){const n=el('details',cls);n.append(el('summary','',label),typeof content==='string'?el('div','folio-prose',content):content);return n;}
+function summaryView(text,empty){
+    const value=text||empty,sections=summarySections(value);
+    if(!sections.length)return el('p','folio-summary-text',value);
+    const sheet=el('dl','folio-summary-text folio-summary-sheet');
+    for(const section of sections){const row=el('div','folio-summary-row');row.append(el('dt','',section.label),el('dd','',section.text));sheet.append(row);}
+    return sheet;
+}
 const stamp=t=>new Date(t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 const dateStamp=t=>new Date(t).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'});
 function ring(label,value,total,help,cls=''){
@@ -199,7 +207,7 @@ export function mountUI(engine){
         const openDetails=new Set([...reader.querySelectorAll('details[open]')].map(n=>n.firstElementChild?.textContent));
         const nodes=[el('p','folio-page-meta',`第 ${e.number} 頁 · ${e.name} · 聊天第 ${e.index+1} 則`),el('h3','folio-reader-title',e.title)];
         if(e.playerInput)nodes.push(disclosure('當時的玩家輸入',e.playerInput));
-        nodes.push(heading('小摘要','助手與向量檢索讀的是這段目錄。它用來選頁，不會取代選中的正文。'),el('p','folio-summary-text',e.summary||(e.automatic?'新回覆正在整理，完成後會自動更新。':'這是舊聊天，不會自動整理。可按「重新整理此頁」或「一鍵整理未整理的」。')),heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body));
+        nodes.push(heading('小摘要','助手與向量檢索讀的是這張目錄表。每列分開人物、事件、關係與未決線索；它只用來選頁，不會取代選中的正文。'),summaryView(e.summary,e.automatic?'新回覆正在整理，完成後會自動更新。':'這是舊聊天，不會自動整理。可按「重新整理此頁」或「一鍵整理未整理的」。'),heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body));
         const actions=el('div','folio-toolbar'),manage=fold(el,'管理這一頁'),manageActions=el('div','folio-toolbar');
         const refresh=button(e.rebuilding?'正在重整此頁…':'重新整理此頁',perform(()=>engine.refresh(e.ref)),'folio-primary');refresh.disabled=!!state.resetting||!!state.rebuild?.pending||!!state.generating;
         actions.append(refresh);manageActions.append(button(e.pinned?'取消釘選':'釘選這頁',perform(()=>engine.pin(e.ref))),button('修改小摘要',()=>{
@@ -250,7 +258,7 @@ export function mountUI(engine){
         if(otherPlayers.length){const d=el('details','folio-other-players');d.dataset.key=last.id+':players';d.append(el('summary','',`其他已發送玩家輸入（${otherPlayers.length} 則）`),el('p','folio-muted','含本次提問或對應正文未核對到的輸入；不計作正文取用。'),...otherPlayers.map(itemView));nodes.push(d);}
         if(uncertain.length){const d=el('details','folio-uncertain');d.dataset.key=last.id+':uncertain';d.append(el('summary','',`${uncertain.length} 則未核對到全文（可能裁剪或改寫）`),el('p','folio-muted','這些是曾交給酒館的內容；最終請求未找到相同全文，不能確認已完整取用。'),...uncertain.map(itemView));nodes.push(d);}
         const audit=el('details','folio-catalogue-audit');audit.dataset.key=last.id+':audit';audit.append(el('summary','',`選頁依據與容量 · ${last.candidates.length} 頁候選`),el('p','folio-muted',`歷史估算 ${last.beforeTokens.toLocaleString()} → ${last.tokens.toLocaleString()} tokens；書頁目標 ${last.budget.toLocaleString()}。不是最終請求的總 token 數。`));
-        for(const c of last.candidates){const skipped=last.skipped.some(s=>s.index===c.index);audit.append(disclosure(`當時第 ${c.number} 頁 · ${c.title} · ${skipped?'選中但放不下':c.selected?'選中':'未選中'}`,c.summary+'\n'+c.reason,'folio-candidate'));}
+        for(const c of last.candidates){const skipped=last.skipped.some(s=>s.index===c.index),content=el('div','folio-candidate-content');content.append(summaryView(c.summary,'這頁沒有摘要'),el('p','folio-candidate-reason',`選頁判斷：${c.reason}`));audit.append(disclosure(`當時第 ${c.number} 頁 · ${c.title} · ${skipped?'選中但放不下':c.selected?'選中':'未選中'}`,content,'folio-candidate'));}
         if(!last.candidates.length)audit.append(el('p','folio-muted',last.mode==='building'?'舊頁目錄尚未齊全，當時保留原歷史。':'當時沒有需要額外查找的舊頁。'));nodes.push(audit);
         if(archived.length)nodes.push(archive);replace(nodes);
     }

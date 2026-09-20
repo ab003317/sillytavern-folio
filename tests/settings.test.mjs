@@ -77,7 +77,13 @@ test('default summaries are detailed retrieval cards instead of vague plot blurb
     assert.match(prompt,/人物與實體/);
     assert.match(prompt,/事件與結果/);
     assert.match(prompt,/目標與線索/);
-    assert.match(prompt,/不要用/);
+    assert.match(prompt,/不用/);
+    assert.match(prompt,/speaker 僅是/);
+    assert.match(prompt,/玩家角色（你）/);
+    assert.match(prompt,/主體不明/);
+    assert.match(prompt,/contextBefore/);
+    assert.match(prompt,/逐字 evidence/);
+    assert.match(prompt,/"sections"/);
 });
 test('recent page setting preserves paired input and still observes available budget',()=>{
     const chat=Array.from({length:10},(_,i)=>({is_user:i%2===0,mes:'正文'+i,name:'test'})),costs=chat.map(()=>10);

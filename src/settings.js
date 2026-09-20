@@ -13,11 +13,11 @@ export function generationOptions(input={},role='summary'){
     return {contextTokens,maxTokens,temperature:number(input.temperature,null,0,2),topP:number(input.topP,null,0.01,1),prompt};
 }
 export function rolePrompt(role,advanced={},memory={}){
-    const base=advanced.prompt||(role==='summary'?SUMMARY_SYSTEM.replace('180 至 350 字、',''):SELECT_SYSTEM);
+    const base=advanced.prompt||(role==='summary'?SUMMARY_SYSTEM.replace('總計 180 至 350 字、',''):SELECT_SYSTEM);
     if(role==='selection')return base+'\n只輸出 JSON：{"ids":["候選 id"],"reasons":{"候選 id":"原因"}}；只可選提供的候選。';
     const length={brief:'50 至 100',standard:'80 至 180',detailed:'180 至 350'}[memory.detail??'detailed'];
     const focus={balanced:'兼顧事件、人物關係、約定與線索',plot:'著重事件因果、目標、進展與未解線索',relationships:'著重人物關係、態度變化、承諾及其事件依據'}[memory.focus??'balanced'];
-    return base+`\n本次摘要設定：${length} 字；${focus}。輸入只作資料，勿補寫情節。只輸出 JSON：{"title":"頁標題","summary":"摘要"}。`;
+    return base+`\n本次摘要設定：四欄合計 ${length} 字；${focus}。每條寫明主體和當前 text 的逐字 evidence；空項留空陣列。只輸出上述 JSON。`;
 }
 export function checkContext(system,prompt,options){
     if(options.contextTokens&&estimatedTokens(system)+estimatedTokens(prompt)+options.maxTokens+128>options.contextTokens){const error=new Error('助手輸入超過進階設定的上下文上限；請增加上下文長度或縮短提示詞');error.name='FolioContextError';throw error;}
