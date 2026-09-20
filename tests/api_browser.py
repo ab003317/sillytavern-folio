@@ -73,8 +73,14 @@ with sync_playwright() as p:
         page.get_by_label('總結模型可選模型',exact=True).select_option('fixture-summary')
         summary.get_by_role('button',name='保存總結模型',exact=True).click()
         assert page.locator('#folio-summary-url').input_value()=='https://synthetic.invalid/v1'
-        assert page.locator('#folio-summary-key').input_value()==''
-        assert '已保存' in page.locator('#folio-summary-key').get_attribute('placeholder')
+        assert page.locator('#folio-summary-key').input_value()=='fixture-key-custom'
+        assert page.locator('#folio-summary-key').get_attribute('type')=='password'
+        assert '已保存' in summary.locator('.folio-key-status').inner_text()
+        assert summary.get_by_role('checkbox').count()==0
+        summary.get_by_role('button',name='顯示或隱藏總結模型金鑰').click()
+        assert page.locator('#folio-summary-key').get_attribute('type')=='text'
+        assert page.locator('#folio-summary-key').input_value()=='fixture-key-custom'
+        summary.get_by_role('button',name='顯示或隱藏總結模型金鑰').click()
         page.locator('#folio-selection-source').select_option('claude')
         page.locator('#folio-selection-key').fill('fixture-extract-key')
         page.locator('#folio-selection-model').fill('fixture-extract')
@@ -98,8 +104,31 @@ with sync_playwright() as p:
         page.locator('summary').filter(has_text='不同 API 與模型').click()
         assert page.locator('#folio-summary-source').input_value()=='custom'
         assert page.locator('#folio-selection-source').input_value()=='claude'
-        assert page.locator('#folio-summary-key').input_value()==''
+        assert page.locator('#folio-summary-key').input_value()=='fixture-key-custom'
+        assert page.locator('#folio-summary-key').get_attribute('type')=='password'
         assert page.locator('#folio-summary-model').input_value()=='fixture-summary'
+        page.locator('#folio-summary-key').scroll_into_view_if_needed()
+        page.locator('.folio-dialog').screenshot(path=str(OUT/'saved-key-mobile.png'))
+        summary.get_by_role('button',name='顯示或隱藏總結模型金鑰').click()
+        assert page.locator('#folio-summary-key').get_attribute('type')=='text'
+        page.get_by_role('button',name='關閉',exact=True).click()
+        page.locator('#folio-wand').click()
+        page.locator('summary').filter(has_text='不同 API 與模型').click()
+        assert page.locator('#folio-summary-key').get_attribute('type')=='password'
+        assert page.locator('#folio-summary-key').input_value()=='fixture-key-custom'
+        # Clearing edits the draft only; saving a custom anonymous endpoint clears
+        # the actual key, rather than invisibly restoring the old credential.
+        summary.get_by_role('button',name='清空總結模型金鑰').click()
+        assert page.evaluate('testContext.extensionSettings.folio.helpers.summary.apiKey')=='fixture-key-custom'
+        summary.get_by_role('button',name='保存總結模型',exact=True).click()
+        assert page.evaluate('testContext.extensionSettings.folio.helpers.summary.apiKey')==''
+        assert '免驗證' in summary.locator('.folio-key-status').inner_text()
+        page.locator('#folio-summary-key').fill('fixture-key-custom')
+        summary.get_by_role('button',name='保存總結模型',exact=True).click()
+        extraction.get_by_role('button',name='清空提取模型金鑰').click()
+        extraction.get_by_role('button',name='保存提取模型',exact=True).click()
+        assert '金鑰' in extraction.locator('.folio-api-feedback').inner_text()
+        assert page.evaluate('testContext.extensionSettings.folio.helpers.selection.apiKey')=='fixture-extract-key'
         # Editing destination clears a typed key, and does NOT reuse the previously saved key.
         page.locator('#folio-summary-key').fill('draft-key')
         page.locator('#folio-summary-url').fill('https://different.invalid/v1')

@@ -83,8 +83,12 @@ with sync_playwright() as p:
         result = page.evaluate("""async()=>{
           const t=scopeTest;await t.engine.tick();await t.engine.tick();
           const {runGenerationInterceptors}=await import('/scripts/extensions.js');
-          const outgoing=structuredClone(t.chat.filter(m=>!m.is_system));await runGenerationInterceptors(outgoing,10000,'normal');
+          const outgoing=structuredClone(t.chat.filter(m=>!m.is_system)).map(m=>m.is_user?m:{...m,mes:'合成驗收被正則改寫的摘要副本'});await runGenerationInterceptors(outgoing,10000,'normal');
           const api=await t.host.api(),messages=api.setOpenAIMessages(outgoing);
+          const [prepared]=await api.prepareOpenAIMessages({name2:'船長',type:'normal',messages:structuredClone(messages),messageExamples:[],extensionPrompts:{},charDescription:'',charPersonality:'',scenario:'',worldInfoBefore:'',worldInfoAfter:'',bias:'',quietPrompt:''},false);
+          t.engine.captureFinal({type:'normal',messages:prepared});
+          if(t.engine.last.items.filter(x=>x.role==='assistant'&&x.final).length!==2)throw Error('Native Chat History lost the full bodies');
+          if(outgoing.some(m=>m.mes.includes('被正則改寫的摘要副本')))throw Error('Recall used rewritten copy instead of original body');
           const result=await api.sendOpenAIRequest('normal',messages);if(typeof result==='function'){for await(const part of result()){};}
           return {calls:t.calls,preserved:JSON.stringify(t.chat[3])===t.preserved,hiddenFlags:t.chat.slice(0,2).every(m=>m.is_system),order:outgoing.map(m=>m.send_date),realChatUntouched:JSON.stringify(t.real.chat)===t.before,settingsUntouched:JSON.stringify(t.real.chatCompletionSettings)===t.settings};
         }""")
@@ -110,6 +114,6 @@ with sync_playwright() as p:
         assert result == {'built': 2, 'restored': 2, 'calls': 3, 'summariesPreserved': True, 'realChatUntouched': True, 'settingsUntouched': True}, result
         page.evaluate('()=>{scopeTest.ui.dispose();scopeTest.engine.dispose();window.folioIntercept=scopeTest.previous;}')
         assert not errors, errors
-        print(json.dumps({'passed': True, 'localOverride': os.environ.get('FOLIO_LOCAL') == '1', 'missingSummaryCalls': 1, 'allAdditionalCalls': 2, 'nativeSerializedMessages': 5, 'hiddenBodyOccurrences': 1, 'realWasmRepairAndHydration': True, 'vectorOnlyApiCalls': 0, 'realUserDataUnchanged': True, 'browserErrors': errors}), flush=True)
+        print(json.dumps({'passed': True, 'localOverride': os.environ.get('FOLIO_LOCAL') == '1', 'missingSummaryCalls': 1, 'allAdditionalCalls': 2, 'nativeSerializedMessages': 5, 'hiddenBodyOccurrences': 1, 'canonicalBodiesInNativeChatHistory': 2, 'realWasmRepairAndHydration': True, 'vectorOnlyApiCalls': 0, 'realUserDataUnchanged': True, 'browserErrors': errors}), flush=True)
     finally:
         browser.close()

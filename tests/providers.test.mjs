@@ -16,16 +16,29 @@ test('provider endpoints strip full operation paths without duplicating version 
     assert.throws(()=>normalizeEndpoint('https://host.invalid/v1','google'),/v1beta/);
 });
 
-test('empty key only reuses exact role destination; changing source/URL cannot leak old credentials',()=>{
+test('explicitly empty key never secretly reuses a saved key; omitted fields only reuse the same destination',()=>{
     const previous=config('deepseek');
-    assert.equal(directConfig({...previous,apiKey:'',model:'new'},previous).apiKey,'fixture-only-key');
+    const omitted={...previous,model:'new'};delete omitted.apiKey;
+    assert.equal(directConfig(omitted,previous).apiKey,'fixture-only-key');
+    assert.throws(()=>directConfig({...previous,apiKey:'',model:'new'},previous),/金鑰/);
     assert.throws(()=>directConfig({...previous,apiKey:'',baseUrl:'https://new.invalid/v1'},previous),/金鑰/);
     assert.throws(()=>directConfig({...previous,provider:'openai',apiKey:''},previous),/金鑰/);
     assert.throws(()=>directConfig({...previous,clearKey:true},previous),/金鑰/);
     const noKey=directConfig({...previous,provider:'custom',apiKey:''},previous);assert.equal(noKey.apiKey,'');
     assert.equal(directConfig({...config(),apiKey:'',clearKey:true},config()).apiKey,'');
+    assert.equal(directConfig({...config(),apiKey:''},config()).apiKey,'');
     assert.throws(()=>config('custom',{apiKey:'abc\nInjected: key'}),/換行/);
     assert.throws(()=>config('custom',{model:''}),/模型/);
+});
+
+test('explicit credential readback is role and destination bound; normal status remains redacted',()=>{
+    const {host}=fixture();host.configureDirect('summary',config());
+    assert.equal(host.savedApiKey('summary','custom','https://synthetic.invalid/v1'),'fixture-only-key');
+    assert.equal(host.savedApiKey('selection','custom','https://synthetic.invalid/v1'),'');
+    assert.equal(host.savedApiKey('summary','custom','https://another.invalid/v1'),'');
+    assert.equal(host.savedApiKey('summary','deepseek','https://synthetic.invalid/v1'),'');
+    assert.equal(JSON.stringify(host.helper('summary')).includes('fixture-only-key'),false);
+    assert.equal(JSON.stringify(host.helperStatus('summary')).includes('fixture-only-key'),false);
 });
 
 for(const provider of Object.keys(PROVIDERS))test(`${provider} routes its own endpoint/key/model for both generation and model list`,()=>{

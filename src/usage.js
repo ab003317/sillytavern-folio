@@ -1,5 +1,20 @@
 export const USAGE_LIMIT=20;
 
+export function usageOverview(record) {
+    const bodies=(record?.items??[]).filter(x=>x.role!=='user'),kept=bodies.filter(x=>x.final===true);
+    const selected=new Set((record?.candidates??[]).filter(x=>x.selected).map(x=>x.index));
+    const recalled=kept.filter(x=>!x.recent&&selected.has(x.index)).length,recent=kept.filter(x=>x.recent).length;
+    return {bodies:kept.length,recalled,recent,retained:kept.length-recalled-recent,unverified:bodies.length-kept.length,
+        players:(record?.items??[]).filter(x=>x.role==='user'&&x.final===true).length,selected:selected.size,skipped:record?.skipped?.length??0};
+}
+
+// Use associations saved for that request, never today's shifted floor numbers.
+// Older receipts did not save pageIndex, so fall back only to their own item order.
+export function playerOwner(record,item) {
+    if(item.pageIndex!==undefined)return item.pageIndex;
+    return record.items.filter(x=>x.role!=='user'&&x.index>item.index).sort((a,b)=>a.index-b.index)[0]?.index;
+}
+
 export function mergeUsage(...groups) {
     const byId=new Map();
     for(const record of groups.flat()){

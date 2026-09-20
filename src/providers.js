@@ -27,8 +27,9 @@ export function normalizeEndpoint(value,provider='custom') {
 export function directConfig(input,previous={},requireModel=true) {
     const provider=input.provider,baseUrl=normalizeEndpoint(input.baseUrl,provider);
     const same=previous.connection==='direct'&&previous.provider===provider&&previous.baseUrl===baseUrl;
-    // Blank means keep only for the SAME destination. Never send an old key to a new host.
-    const apiKey=input.clearKey?'':String(input.apiKey|| (same?previous.apiKey:'') ||'').trim();
+    // An explicitly empty field is empty, not a hidden instruction to reuse a key.
+    // Programmatic callers can omit the field to preserve the SAME destination.
+    const apiKey=input.clearKey?'':String(Object.hasOwn(input,'apiKey')?(input.apiKey??''):(same?previous.apiKey??'':'')).trim();
     if(/[\r\n]/.test(apiKey))throw new Error('API 金鑰不能包含換行，請只貼上一把金鑰');
     if(!apiKey&&provider!=='custom')throw new Error('請填寫此來源的 API 金鑰');
     const model=String(input.model??'').trim();

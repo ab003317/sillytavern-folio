@@ -635,6 +635,33 @@ test('final request audit distinguishes removal and repeated text without double
     assert.deepEqual(r.engine.last.items.map(x=>x.final),[true,false,true]);assert.equal(r.engine.last.final.dropped,1);
     const trace=r.engine.last;r.engine.changed();assert.equal(r.engine.last,trace,'new same-chat events preserve audit');
 });
+
+test('recalled bodies come from the valid catalogue source even when prompt regex rewrites or empties incoming assistants',async()=>{
+    for(const replacement of ['', '已被替換成短摘要']){
+        const r=rig([message('前面的玩家背景',0,true),message('<story>舊頁完整正文不能丟失。</story><state_bar>狀態</state_bar>',1),message('最近玩家背景',2,true),message('近期完整正文。',3),message('詢問舊頁',4,true)]);ready(r);
+        const before=JSON.stringify(r.c.chat);r.host.memory=()=>({recentPages:1});r.host.complete=async()=>'{"ids":["p1"]}';
+        const outgoing=r.c.chat.map(m=>({...m,mes:m.is_user?m.mes:replacement}));await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
+        assert.deepEqual(outgoing.map(m=>m.mes),['前面的玩家背景','舊頁完整正文不能丟失。','最近玩家背景','近期完整正文。','詢問舊頁']);
+        r.engine.captureFinal({type:'normal',messages:outgoing.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
+        assert.equal(r.engine.last.items.filter(x=>x.role==='assistant'&&x.final).length,2);
+        assert.equal(r.engine.last.items.find(x=>x.index===0).pageIndex,1);assert.equal(r.engine.last.items.find(x=>x.index===2).pageIndex,3);
+        assert.equal(r.engine.last.items.find(x=>x.index===4).pageIndex,undefined);assert.equal(JSON.stringify(r.c.chat),before);
+    }
+});
+
+test('narrator body is audited against the native system role but remains a body in the receipt',async()=>{
+    const r=rig([{...message('旁白正文',0),extra:{type:'narrator'}},message('玩家提問',1,true)]);ready(r);
+    const out=structuredClone(r.c.chat);await r.engine.intercept(out,10000,()=>assert.fail('abort'),'normal');
+    r.engine.captureFinal({type:'normal',messages:[{role:'system',content:'旁白正文'},{role:'user',content:'玩家提問'}]});
+    assert.equal(r.engine.last.items[0].role,'assistant');assert.equal(r.engine.last.items[0].wireRole,'system');assert.equal(r.engine.last.items[0].final,true);
+});
+
+test('uncatalogued prompt transforms and wholly removed visible pages are not silently restored',async()=>{
+    const r=rig([message('未整理正文',0),message('已被其他插件移除的正文',1),message('最近正文',2),message('玩家提問',3,true)]);ready(r);delete r.c.chat[0].extra[KEY];
+    const incoming=[{...r.c.chat[0],mes:'未整理頁的宿主副本'},...structuredClone(r.c.chat.slice(2))];r.host.memory=()=>({recentPages:1});
+    await r.engine.intercept(incoming,10000,()=>assert.fail('abort'),'normal');
+    assert.equal(incoming[0].mes,'未整理頁的宿主副本');assert.equal(incoming.some(m=>m.send_date==='t1'),false);assert.equal(r.engine.last.mode,'building');
+});
 test('preview is side-effect free for chat and does not claim a final main request',async()=>{
     const r=rig();const before=JSON.stringify(r.c.chat);await r.engine.preview('試跑');
     assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.last.preview,true);assert.equal(r.engine.awaitingFinal,false);assert.equal(r.stats().saves,0);

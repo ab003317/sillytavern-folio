@@ -441,7 +441,15 @@ export class Engine {
             }
             const order=m=>{const i=this.sourceIndex(m);return i<0?Number.MAX_SAFE_INTEGER:i;};
             original.sort((a,b)=>order(a)-order(b));
-            const incomingSet=new Set(incoming),cleaned=original.map(m=>m.is_user?m:{...m,mes:cleanBody(m.mes)}),costs=[];
+            const sourceByIndex=new Map(sourcePages.map(p=>[p.index,p]));
+            // The host applies prompt regexes before this hook. A catalogued page
+            // must recall its own full cleaned source, not a rewritten/empty copy.
+            // Still respect messages removed by earlier interceptors: only the
+            // already-established candidate pool can be restored here.
+            const incomingSet=new Set(incoming),cleaned=original.map(m=>{
+                const source=sourceByIndex.get(this.sourceIndex(m));
+                return m.is_user?m:{...m,mes:source?.record?.done?source.body:cleanBody(m.mes)};
+            }),costs=[];
             for(const m of cleaned){active();costs.push(await this.host.count(m.mes));}
             active();
             if(original.some(m=>this.sourceIndex(m)<0&&!(options.preview&&m.send_date==='folio-preview')))throw new DOMException('Ambiguous or deleted message','AbortError');
@@ -450,9 +458,11 @@ export class Engine {
             const incomingPositions=original.map((m,i)=>incomingSet.has(m)?i:-1).filter(i=>i>=0);
             const recent=recentPages(incomingPositions.map(i=>cleaned[i]),incomingPositions.map(i=>costs[i]),budget.recent,memory.recentPages??0);
             recent.picked=new Set([...recent.picked].map(i=>incomingPositions[i]));
-            const entries=bookPages(cleaned).map(p=>{
-                const sourceIndex=this.sourceIndex(original[p.index]),source=sourcePages.find(x=>x.index===sourceIndex),r=source?.record;
-                return {...p,i:p.index,index:sourceIndex,id:`p${sourceIndex}`,number:source?.number??p.number,title:r?.title||excerpt(p.body,32),summary:r?.summary??'',ready:!!r?.done,pinned:!!r?.pinned,record:r};
+            const positionsBySource=new Map(original.map((m,i)=>[this.sourceIndex(m),i]));
+            const entries=original.flatMap((m,i)=>{
+                const sourceIndex=this.sourceIndex(m),source=sourceByIndex.get(sourceIndex),r=source?.record;if(!source)return [];
+                return [{...source,i,index:sourceIndex,id:`p${sourceIndex}`,userIndices:source.userIndices.map(index=>positionsBySource.get(index)).filter(index=>index!==undefined),
+                    title:r?.title||excerpt(source.body,32),summary:r?.summary??'',ready:!!r?.done,pinned:!!r?.pinned,record:r}];
             });
             for(const p of entries)if(recent.picked.has(p.i))for(const i of p.userIndices)if(!recent.picked.has(i)){recent.picked.add(i);recent.used+=costs[i];}
             const older=entries.filter(p=>!recent.picked.has(p.i));
@@ -493,7 +503,12 @@ export class Engine {
             active();const ordered=[...chosen].sort((a,b)=>a-b);
             // While the catalogue is incomplete, do not change even the source formatting.
             const result=ordered.map(i=>trace.mode==='building'?original[i]:cleaned[i]);
-            trace.items=ordered.map((i,j)=>({index:this.sourceIndex(original[i]),sourceStamp:stamps[this.sourceIndex(original[i])],number:entries.find(p=>p.i===i)?.number,title:entries.find(p=>p.i===i)?.title,name:original[i].name,role:original[i].is_user?'user':'assistant',body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),final:null}));
+            trace.items=ordered.map((i,j)=>{
+                const page=entries.find(p=>p.i===i),owner=page??entries.find(p=>p.userIndices.includes(i));
+                return {index:this.sourceIndex(original[i]),sourceStamp:stamps[this.sourceIndex(original[i])],number:page?.number,title:page?.title,name:original[i].name,
+                    role:original[i].is_user?'user':'assistant',wireRole:original[i].extra?.type==='narrator'?'system':original[i].is_user?'user':'assistant',pageIndex:owner?.index,
+                    body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),final:null};
+            });
             Object.assign(trace,{tokens:used,model:trace.candidates.length?(this.host.models?.selection??this.host.model):'',stage:options.preview?'preview':'awaiting-final'});
             if(!options.preview){chat.splice(0,chat.length,...result);this.awaitingFinal=true;this.generationGuard={identity,stamps};}
             this.warning=warning;this.log(options.preview?'選頁試跑完成，未生成正文':`已提交 ${trace.items.length} 則歷史，等待酒館最終組裝`);
@@ -526,7 +541,7 @@ export class Engine {
             const needle=normalize(value);item.final=false;
             if(!needle)continue;
             for(const m of messages){
-                if(m.role!==item.role)continue;
+                if(m.role!==(item.wireRole??item.role))continue;
                 let at=m.text.indexOf(needle);
                 while(at>=0&&m.used.some(([a,b])=>at<b&&at+needle.length>a))at=m.text.indexOf(needle,at+1);
                 if(at>=0){m.used.push([at,at+needle.length]);item.final=true;break;}

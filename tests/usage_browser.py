@@ -70,7 +70,12 @@ with sync_playwright() as p:
         page.locator('.folio-dialog').screenshot(path=str(OUT/'dashboard-mobile.png'))
         assert page.locator('.folio-content').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
         page.get_by_role('button',name='查看發送紀錄',exact=True).click()
-        assert page.locator('#folio-view-selection').get_by_text('已核對取用：2 頁正文、4 則玩家背景',exact=True).is_visible()
+        assert page.locator('#folio-view-selection').get_by_role('heading',name='已核對取用：2 頁正文、4 則玩家背景',exact=False).is_visible()
+        assert page.locator('#folio-view-selection .folio-body-item').first.is_visible()
+        assert page.locator('#folio-view-selection .folio-player-item:visible').count()==0
+        assert '保留近期正文 2 頁' in page.locator('#folio-view-selection .folio-recall-count').inner_text()
+        assert '1 頁正文已交給酒館' in page.locator('#folio-view-selection').inner_text()
+        assert page.locator('.folio-player-context').count()==2
         assert not page.locator('.folio-uncertain').get_attribute('open')
         # A second real request becomes latest only after its resulting assistant floor exists.
         old_text=page.locator('.folio-usage-bar select').inner_text()

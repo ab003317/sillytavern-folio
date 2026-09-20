@@ -109,6 +109,13 @@ export class Host {
         const config=directConfig(input,this.settings().helpers[role]);
         this.settings().helpers[role]=config;if(activate)this.settings().apiMode='separate';if(this.settings().apiMode==='separate')this.models[role]='';this.context().saveSettingsDebounced();
     }
+    savedApiKey(role,provider,baseUrl) {
+        if(!MODEL_ROLES[role])throw new Error('未知模型用途');
+        const config=this.settings().helpers[role];
+        // Only the credential field explicitly requests this value. Keep it out of
+        // snapshots, connection status, activity, chat and usage records.
+        return config?.connection==='direct'&&config.provider===provider&&config.baseUrl===baseUrl?String(config.apiKey??''):'';
+    }
     configureApiMode(mode){if(!['main','separate'].includes(mode))throw new Error('請選擇 API 方案');this.settings().apiMode=mode;this.models={summary:'',selection:''};this.context().saveSettingsDebounced();}
     memory(){return memoryOptions(this.settings().memory);}
     advanced(role){return generationOptions(this.settings().advanced?.[role],role);}
