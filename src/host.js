@@ -286,16 +286,15 @@ export class Host {
     }
     readUsage(){const records=this.context().chatMetadata?.[USAGE_KEY]?.records;return Array.isArray(records)?records:[];}
     stageUsage(identity,records){
-        const c=this.context();if(!identity||identity!==this.identity()||!c.chatMetadata||!records.length)return null;
+        const c=this.context();if(!identity||identity!==this.identity()||!c.chatMetadata||!records.length)return false;
         const merged=mergeUsage(records,this.readUsage());
-        if(JSON.stringify(merged)===JSON.stringify(this.readUsage()))return null;
+        if(JSON.stringify(merged)===JSON.stringify(this.readUsage()))return false;
         c.chatMetadata[USAGE_KEY]={version:1,records:structuredClone(merged)};
-        // Stage synchronously so the host's normal reply save includes the journal.
-        return {identity,chat:c.chat,metadata:c.chatMetadata};
-    }
-    async flushUsage(ticket){
-        const c=this.context();
-        if(ticket&&ticket.identity===this.identity()&&ticket.chat===c.chat&&ticket.metadata===c.chatMetadata)await c.saveChat();
+        // Do not save here. During streaming ST emits GENERATION_ENDED before
+        // MESSAGE_RECEIVED and before its own saveChatConditional. Starting a
+        // second save races the native reply save and can roll both back. The
+        // synchronous metadata change is included in the native save that follows.
+        return true;
     }
     async save() { await this.context().saveChat(); }
 }

@@ -80,14 +80,9 @@ export class Engine {
             this.usages=mergeUsage([receipt],this.usages);
         }
         const records=identity===this.usageIdentity?structuredClone(this.usages):[receipt];
-        const ticket=this.host.stageUsage?.(identity,records);
-        this.usageWrite=this.usageWrite.catch(()=>{}).then(async()=>{
-            const [local,chat]=await Promise.allSettled([this.cache.appendUsage(identity,records),this.host.flushUsage?.(ticket)]);
-            if(chat.status==='rejected'&&identity===this.host.identity())this.usageError='取用紀錄的聊天備份保存失敗；本機副本保留，請檢查酒館連線';
-            if(local.status==='rejected')throw local.reason;
-            return {records:local.value,chatFailed:chat.status==='rejected'};
-        }).then(({records:saved,chatFailed})=>{
-            if(!this.disposed&&identity===this.host.identity()&&identity===this.usageIdentity){this.usages=mergeUsage(this.usages,saved);if(!chatFailed)this.usageError='';this.emit();}
+        this.host.stageUsage?.(identity,records);
+        this.usageWrite=this.usageWrite.catch(()=>{}).then(()=>this.cache.appendUsage(identity,records)).then(saved=>{
+            if(!this.disposed&&identity===this.host.identity()&&identity===this.usageIdentity){this.usages=mergeUsage(this.usages,saved);this.usageError='';this.emit();}
         }).catch(()=>{if(identity===this.host.identity()){this.usageError='取用紀錄的本機保存失敗；不要清除網站資料，請檢查儲存空間及酒館聊天是否正常保存';this.emit();}});
     }
     responseReceived({replacement=false,messageId,type}={}) {

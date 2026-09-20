@@ -64,7 +64,7 @@ def setup(page):
       document.querySelector('.folio-dialog')?.remove();document.querySelector('#folio-wand')?.remove();ui=mountUI(engine);engine.changed();ui.open();
       const t={engine,host,fixture,api,cache,ui,real};window.receiptTest=t;
       t.begin=async type=>{engine.generationStarted(type);const core=structuredClone(type==='swipe'?fixture.chat.slice(0,-1):fixture.chat);await engine.intercept(core,100000,()=>{throw Error('unexpected abort');},type);engine.captureFinal({type,messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});return engine.last.id;};
-      t.send=async(type,text)=>{const id=await t.begin(type);await api.saveReply({type,getMessage:'FOLIO-RECEIPT '+text});await engine.generationEnded();await engine.usageWrite;if(engine.snapshot().usages[0]?.id!==id)throw Error('Native '+type+' did not bind its receipt');return id;};
+      t.send=async(type,text)=>{const id=await t.begin(type);await api.saveReply({type,getMessage:'FOLIO-RECEIPT '+text});await engine.generationEnded();await engine.usageWrite;await fixture.saveChat();if(engine.snapshot().usages[0]?.id!==id)throw Error('Native '+type+' did not bind its receipt');return id;};
       return {restored:engine.snapshot().usages.length};
     }""",{'prefix':PREFIX,'disk':disk})
 
