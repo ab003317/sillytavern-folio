@@ -27,7 +27,7 @@ function ring(label,value,total,help,cls=''){
 
 export function mountUI(engine){
     const menu=document.querySelector('#extensionsMenu');if(!menu)throw new Error('找不到輸入欄魔法棒選單');
-    let state=engine.snapshot(),tab='run',selected=null,editing=false,shown=60,usageChoice='',usageChat='',autoWasActive=false,manualWasActive=false,autoCompletion=false,autoTimer=null;
+    let state=engine.snapshot(),tab='run',selected=null,editing=false,shown=60,usageChoice='',usageChat='',autoWasActive=false,manualWasActive=false,manualJobId=null,autoCompletion=false,autoTimer=null;
     const entry=button('',()=>open(),'list-group-item flex-container flexGap5 interactable');entry.id='folio-wand';
     const icon=el('i','fa-fw fa-solid fa-book-open extensionsMenuExtensionButton');icon.setAttribute('aria-hidden','true');
     const badge=el('span','folio-menu-status');entry.append(icon,el('span','','書頁記憶'),badge);menu.append(entry);
@@ -50,8 +50,8 @@ export function mountUI(engine){
     dialog.append(top,status,warning,error,tabs,content);
     const autoPopup=el('aside','folio-auto-popup'),autoPopupHead=el('div','folio-auto-popup-head'),autoPopupTitle=el('strong','folio-auto-popup-title'),autoPopupDetail=el('p','folio-auto-popup-detail'),autoPopupProgress=el('progress'),autoPopupActions=el('div','folio-auto-popup-actions');
     autoPopup.hidden=true;autoPopup.setAttribute('role','region');autoPopup.setAttribute('aria-label','記憶整理狀態');autoPopupDetail.setAttribute('aria-live','polite');autoPopupProgress.setAttribute('aria-label','記憶整理進度');
-    const autoView=button('查看進度',()=>{open();setTab('run');}),autoRetry=button('立即重試',()=>engine.retry());
-    const autoMark=el('span','folio-auto-mark','書');autoMark.setAttribute('aria-hidden','true');autoPopupHead.append(autoMark,autoPopupTitle);autoPopupActions.append(autoView,autoRetry);autoPopup.append(autoPopupHead,autoPopupDetail,autoPopupProgress,autoPopupActions);
+    const autoView=button('查看進度',()=>{open();setTab('run');}),autoRetry=button('立即重試',()=>engine.retry()),autoStop=button('停止本次重整',event=>perform(()=>engine.stopRebuild())(event));autoStop.hidden=true;
+    const autoMark=el('span','folio-auto-mark','書');autoMark.setAttribute('aria-hidden','true');autoPopupHead.append(autoMark,autoPopupTitle);autoPopupActions.append(autoView,autoRetry,autoStop);autoPopup.append(autoPopupHead,autoPopupDetail,autoPopupProgress,autoPopupActions);
     document.body.append(dialog,autoPopup);
     const perform=task=>async event=>{
         const b=event?.currentTarget;if(b)b.disabled=true;error.hidden=true;
@@ -104,6 +104,8 @@ export function mountUI(engine){
         progress.setAttribute('aria-valuetext',complete?'新回覆整理完成':autoText(a));
     }
     function rebuildText(job=state.rebuild){
+        if(state.stopping)return '正在中止本次助手工作；保留完成頁，未完成頁恢復原摘要。';
+        if(state.stopFailed)return '停止狀態未能保存；本視窗不再發出重整請求。請按「重試停止」，保存成功前刷新可能恢復未完成任務。';
         if(state.rebuildQueued)return '已接受操作；本次角色回覆完成後，會重新整理目前聊天。';
         if(state.resetting&&!job)return '正在保存重新整理任務；正文不會被刪除。';
         if(!job)return '準備重新整理目前聊天。';
@@ -113,6 +115,7 @@ export function mountUI(engine){
         return `${job.cancelled?'本次重新整理已停止':'舊聊天重新整理完成'} · ${counts}`;
     }
     function setRebuildProgress(progress,job=state.rebuild,complete=false){
+        if(state.rebuildQueued||(state.resetting&&!job?.pending)){job=null;complete=false;}
         const total=Math.max(1,(job?.total??0)*2),settled=((job?.cancelled??0)+(job?.removed??0))*2;
         progress.max=total;progress.value=complete?total:Math.min(total,(job?.done??0)+(job?.vectors??0)+settled);
         progress.setAttribute('aria-valuetext',rebuildText(job));
@@ -125,16 +128,19 @@ export function mountUI(engine){
         if(state.warning&&a?.active)head.append(button('立即重試',()=>engine.retry()));section.append(head,detail,progress);return section;
     }
     function renderAutoPopup(){
-        const a=state.auto,job=state.rebuild,manualActive=state.resetting||state.rebuildQueued||!!job?.pending;
+        const a=state.auto,job=state.rebuild,manualActive=state.stopping||state.resetting||state.rebuildQueued||!!job?.pending;
+        autoPopupProgress.hidden=false;
+        autoStop.hidden=!manualActive;autoStop.disabled=!!state.stopping;autoStop.textContent=state.stopping?'正在停止…':state.stopFailed?'重試停止':state.rebuildQueued?'取消排隊':'停止本次重整';
         if(manualActive){
+            if(!manualWasActive||state.rebuildQueued)manualJobId=null;if(job?.pending)manualJobId=job.id;
             clearTimeout(autoTimer);autoCompletion=false;manualWasActive=true;autoPopup.hidden=false;autoPopup.classList.toggle('folio-auto-error',!!state.warning);
             autoPopup.dataset.phase=state.rebuildQueued||state.resetting?'waiting':state.work?.stage??'summary';
-            autoPopupTitle.textContent=state.warning?'重新整理等待重試':state.rebuildQueued?'已排隊，等待回覆完成':state.resetting?'正在建立重新整理任務':'正在重新整理舊聊天';
-            autoPopupDetail.textContent=rebuildText(job);setRebuildProgress(autoPopupProgress,job);autoRetry.hidden=!state.warning||state.resetting||state.rebuildQueued;return;
+            autoPopupTitle.textContent=state.stopping?'正在停止本次重整':state.warning?'重新整理等待重試':state.rebuildQueued?'已排隊，等待回覆完成':state.resetting?'正在建立重新整理任務':'正在重新整理舊聊天';
+            autoPopupDetail.textContent=rebuildText(job);autoPopupProgress.hidden=state.rebuildQueued||(state.resetting&&!job?.pending);setRebuildProgress(autoPopupProgress,job);autoRetry.hidden=state.stopFailed||state.stopping||!state.warning||state.resetting||state.rebuildQueued;return;
         }
         if(manualWasActive){
             manualWasActive=false;
-            if(job?.complete){
+            if(job?.complete&&job.id===manualJobId){
                 autoCompletion=true;autoPopup.hidden=false;autoPopup.classList.remove('folio-auto-error');autoPopup.dataset.phase='complete';autoPopupTitle.textContent=job.cancelled?'本次重新整理已停止':'舊聊天重新整理完成';autoPopupDetail.textContent=rebuildText(job);setRebuildProgress(autoPopupProgress,job,!job.cancelled);autoRetry.hidden=true;
                 clearTimeout(autoTimer);autoTimer=setTimeout(()=>{autoCompletion=false;autoPopup.hidden=true;},3200);return;
             }
@@ -229,12 +235,12 @@ export function mountUI(engine){
     function renderRebuild(){
         const job=state.rebuild;
         for(const f of rebuildPanels){
-            f.all.disabled=state.resetting||!!job?.pending||state.rebuildQueued;
-            f.all.textContent=state.resetting?'正在保存重整任務…':job?.pending?'重新整理進行中':state.rebuildQueued?'已排隊，等待回覆完成':'一鍵重新整理全部';
+            f.all.disabled=state.stopping||state.resetting||!!job?.pending||state.rebuildQueued;
+            f.all.textContent=state.stopping?'正在停止…':state.resetting?'正在保存重整任務…':job?.pending?'重新整理進行中':state.rebuildQueued?'已排隊，等待回覆完成':'一鍵重新整理全部';
             f.detail.textContent=state.rebuildQueued?'已接受操作；這次角色回覆完成後自動開始，不需要再按一次。':`重做目前聊天的 ${state.total} 頁摘要與向量索引，包含人工修改的摘要；會呼叫總結模型並可能收費。不刪正文，「新回覆自動記憶」關閉時也能執行。${state.generating?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':''}`;
-            f.stop.hidden=!job?.pending;f.stop.disabled=state.resetting;f.retry.hidden=!job?.pending||!state.warning;f.retry.disabled=state.busy;
-            f.progress.hidden=!(job||state.rebuildQueued||state.resetting);setRebuildProgress(f.progress,job);
-            f.outcome.textContent=state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':job?`本次重整：摘要 ${job.done}/${job.total} 頁，向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已完成，向量暫用文字檢索。':job.cancelled?'已停止。':'已完成。'}`:state.resetting?'正在建立手動重新整理任務。':'';
+            f.stop.hidden=!(state.stopping||state.resetting||state.rebuildQueued||job?.pending);f.stop.disabled=!!state.stopping;f.stop.textContent=state.stopping?'正在停止…':state.stopFailed?'重試停止':state.rebuildQueued?'取消排隊':'停止本次重整';f.retry.hidden=state.stopFailed||state.stopping||!job?.pending||!state.warning;f.retry.disabled=state.busy;
+            f.progress.hidden=state.rebuildQueued||(state.resetting&&!job?.pending)||!job;setRebuildProgress(f.progress,job);
+            f.outcome.textContent=state.stopping||state.stopFailed?rebuildText(job):state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':state.resetting&&!job?.pending?'正在建立手動重新整理任務。':job?`本次重整：摘要 ${job.done}/${job.total} 頁，向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已完成，向量暫用文字檢索。':job.cancelled?'已停止。':'已完成。'}`:'';
         }
     }
     function render(){renderRebuild();memoryOptions.render(state);if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}

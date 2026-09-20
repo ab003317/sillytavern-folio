@@ -19,6 +19,16 @@ test('fresh installation follows the live main model for both roles and preserve
         host.configureApiMode('separate');assert.deepEqual(host.settings().helpers.summary,saved);assert.equal(host.helper().model,'private-model');
     }finally{globalThis.fetch=old;}
 });
+
+test('generation adapter uses live host state, native preparation state, and returns unknown for unsupported hosts',async()=>{
+    const {host,c}=fixture(),documentBefore=globalThis.document;
+    try{
+        c.isGenerating=()=>true;assert.equal(await host.generationActive(),true);delete c.isGenerating;
+        host.generationModule=Promise.resolve({isGenerating:()=>false});globalThis.document={body:{dataset:{generating:'true'}}};assert.equal(await host.generationActive(),true);
+        delete document.body.dataset.generating;assert.equal(await host.generationActive(),false);
+        host.generationModule=Promise.resolve({});assert.equal(await host.generationActive(),null);
+    }finally{if(documentBefore===undefined)delete globalThis.document;else globalThis.document=documentBefore;}
+});
 test('advanced output sampling and prompt reach main, direct and profile requests without changing main settings',async()=>{
     const {host,c}=fixture(),calls=[],old=globalThis.fetch,before=JSON.stringify(c.chatCompletionSettings);globalThis.fetch=async(_url,options)=>{calls.push(JSON.parse(options.body));return Response.json({content:'{"summary":"測試"}'});};
     try{

@@ -55,6 +55,10 @@ with sync_playwright() as p:
         switch=page.get_by_role('switch',name='新回覆自動記憶',exact=True)
         assert not switch.is_checked()
         assert page.locator('.folio-toggle-state').inner_text()=='已關閉'
+        page.evaluate("async()=>{const c=SillyTavern.getContext();await c.eventSource.emit(c.eventTypes.GENERATION_STARTED,'normal',{},true);await c.eventSource.emit(c.eventTypes.GENERATION_STARTED,'quiet',{},false);}")
+        assert '目前正在生成回覆' not in page.locator('#folio-view-run .folio-rebuild').inner_text()
+        native_state=page.evaluate("""async prefix=>{const {Host}=await import(prefix+'src/host.js'),api=await import('/script.js'),h=new Host();api.deactivateSendButtons();const busy=await h.generationActive();api.activateSendButtons();const idle=await h.generationActive();return {busy,idle};}""",PREFIX)
+        assert native_state=={'busy':True,'idle':False},native_state
         page.get_by_role('tab',name='記憶助手',exact=True).click()
         assert page.get_by_role('button',name='已使用酒館主 API',exact=True).is_visible()
         assert not page.locator('#folio-summary-source').is_visible()
@@ -83,20 +87,23 @@ with sync_playwright() as p:
           const oldEngine=new Engine(oldHost,oldCache,oldEmbedder);oldEngine.schedule=()=>{};oldEngine.changed();await oldEngine.tick();const oldBoundary={recorded:!!bookPages(oldChat)[0].record,manualPending:oldEngine.snapshot().auto.manualPending};oldEngine.dispose();
           const chat=['合成驗收：船長的藍色信封要交給誰？','合成驗收：船長約定冬天前送到山城，收信人是旅店主人。','合成驗收：我收好信，走進旅店。','合成驗收：旅店主人留下銀色鑰匙，請旅人明日到碼頭。','合成驗收：我明天要去哪裡？'].map((mes,i)=>({mes,is_user:i%2===0,name:i%2?'船長':'玩家',send_date:'folio-usage-'+i,extra:{}}));
           for(const p of bookPages(chat)){const r=newRecord(p.message,p.playerInput);r.done=true;r.summary=p.body;r.title=p.number===1?'藍色信件的約定':'銀色鑰匙';p.message.extra[KEY]=r;}
-          const fixture={...real,chat,chatId:'folio-usage-only',mainApi:'openai',extensionSettings:{folio:{enabled:true,account:'folio-usage-only'}},saveChat:async()=>{throw Error('Unexpected chat save');},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>text.length};
+          const fixture={...real,chat,chatId:'folio-usage-only',mainApi:'openai',isGenerating:()=>window.usageTest?.engine.generating??false,extensionSettings:{folio:{enabled:true,account:'folio-usage-only'}},saveChat:async()=>{throw Error('Unexpected chat save');},saveSettingsDebounced:()=>{},getTokenCountAsync:async text=>text.length};
           const host=new Host(()=>fixture),cache=new Cache('folio-installed-usage-test'),embedder={stop(){},embed:async()=>{throw Error('No inference needed');}};
           document.querySelector('.folio-dialog').remove();document.querySelector('#folio-wand').remove();
           const t={host,cache,embedder,fixture,originalChat,originalSettings,previous:window.folioIntercept,real};window.usageTest=t;
           t.mount=()=>{t.engine=new Engine(host,cache,embedder,s=>t.ui?.update(s));t.engine.schedule=()=>{};t.ui=mountUI(t.engine);t.engine.changed();for(const p of t.engine.pages())if(p.record?.done)t.engine.vectors.set(t.engine.vectorKey(p.record),[[1,0]]);t.engine.emit();window.folioIntercept=(...args)=>t.engine.intercept(...args);};
           t.observe=body=>t.engine.captureFinal(body);real.eventSource.on(real.eventTypes.CHAT_COMPLETION_SETTINGS_READY,t.observe);t.mount();
           const {runGenerationInterceptors}=await import('/scripts/extensions.js');
-          t.engine.generationStarted();t.ui.open();document.querySelector('#folio-view-run .folio-rebuild .folio-primary').click();await Promise.resolve();
+          t.engine.generationStarted();t.ui.open();document.querySelector('#folio-view-run .folio-rebuild .folio-primary').click();for(let i=0;i<6;i++)await Promise.resolve();
           const manualPopup=[...document.querySelectorAll('.folio-auto-popup')].at(-1);
           const installedManualQueue={queued:t.engine.snapshot().rebuildQueued,popupVisible:!manualPopup.hidden,popupText:manualPopup.textContent};
-          t.engine.queuedRebuild=null;t.engine.generating=false;t.engine.emit();document.querySelector('.folio-dialog').close();
+          const cancelButton=[...manualPopup.querySelectorAll('button')].find(b=>b.textContent==='取消排隊');if(!cancelButton||cancelButton.hidden)throw Error('Queue cancellation missing');cancelButton.click();for(let i=0;i<6;i++)await Promise.resolve();
+          const installedQueueCancelled=!t.engine.snapshot().rebuildQueued&&t.engine.generating&&!t.engine.snapshot().rebuild;
+          if(!installedQueueCancelled)throw Error('Queue cancellation failed or stopped the main reply');
+          t.engine.generating=false;t.engine.emit();document.querySelector('.folio-dialog').close();
           t.sequence=0;t.send=async()=>{const core=structuredClone(chat);if(await runGenerationInterceptors(core,10000,'normal'))throw Error('Unexpected abort');const api=await host.api();const answer=await api.sendOpenAIRequest('normal',core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})));if(typeof answer==='function'){for await(const part of answer()){};}const n=++t.sequence;chat.push({mes:'合成驗收：角色回覆 '+n,is_user:false,name:'船長',send_date:'usage-result-'+n,extra:{}});t.engine.newResponse();await t.engine.usageWrite;return core;};
           await t.send();t.first=t.engine.snapshot().usages[0].id;t.ui.open();
-          return {oldBoundary,installedManualQueue,receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
+          return {oldBoundary,installedManualQueue,installedQueueCancelled,receiptCount:t.engine.snapshot().usages.length,kept:t.engine.snapshot().usages[0].final.kept,originalChatUntouched:JSON.stringify(real.chat)===originalChat,settingsUntouched:JSON.stringify(real.chatCompletionSettings)===originalSettings};
         }""",PREFIX)
         assert result['oldBoundary']=={'recorded':False,'manualPending':1},result
         assert result['installedManualQueue']['queued'] and result['installedManualQueue']['popupVisible'] and '已排隊，等待回覆完成' in result['installedManualQueue']['popupText'],result
@@ -131,6 +138,6 @@ with sync_playwright() as p:
         assert final
         assert len(mock_sends)==3,mock_sends
         assert not errors,errors
-        print(json.dumps({'passed':True,'installedVersion':version,'installedThreeLayers':True,'oldChatAutomaticCalls':0,'oldChatManualPending':1,'nativeWand':True,'installedManualQueue':True,'installedManualPopup':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
+        print(json.dumps({'passed':True,'installedVersion':version,'installedThreeLayers':True,'installedDryRunFilter':True,'nativeGenerationState':native_state,'installedQueueCancelled':result['installedQueueCancelled'],'oldChatAutomaticCalls':0,'oldChatManualPending':1,'nativeWand':True,'installedManualQueue':True,'installedManualPopup':True,'installedAutoProgress':True,'nativeMockSends':mock_sends,'paidCalls':0,'deletedLatestAndSourcesPersist':True,'cacheReopen':True,'historySwitching':True,'userChatAndSettingsUntouched':final,'browserErrors':errors}),flush=True)
     finally:
         browser.close()

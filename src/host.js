@@ -33,6 +33,18 @@ export class Host {
         if (!this.modules) this.modules = import('/scripts/openai.js').catch(e => { this.modules = null; throw e; });
         return this.modules;
     }
+    async generationActive() {
+        const c=this.context();
+        if(typeof c.isGenerating==='function')return !!c.isGenerating();
+        // Live host state repairs missed/early-return generation events. Do not infer
+        // completion from a timeout or from the visibility of Folio's own controls.
+        try{
+            this.generationModule??=import('/script.js').catch(e=>{this.generationModule=null;throw e;});
+            const api=await this.generationModule;
+            if(typeof api.isGenerating!=='function')return null;
+            return !!api.isGenerating()||globalThis.document?.body?.dataset.generating==='true';
+        }catch{return null;}
+    }
     async memoryConflict() {
         const extensions = await import('/scripts/extensions.js');
         const disabled = this.context().extensionSettings.disabledExtensions ?? [];

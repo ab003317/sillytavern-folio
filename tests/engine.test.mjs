@@ -140,6 +140,110 @@ test('one-click rebuild queues during generation and starts after the reply ends
     await r.engine.tick();await r.engine.tick();assert.equal(r.engine.snapshot().rebuild.complete,true);assert.equal(r.stats().calls,1);
 });
 
+test('dry-run and quiet starts do not latch generation or abort work; real start is preserved',()=>{
+    const r=rig();r.engine.controller=new AbortController();r.engine.generationGuard={test:true};
+    r.engine.generationStarted('normal',{},true);r.engine.generationStarted('quiet');
+    assert.equal(r.engine.generating,false);assert.equal(r.engine.controller.signal.aborted,false);assert.deepEqual(r.engine.generationGuard,{test:true});
+    r.engine.generationStarted('normal',{},false);r.engine.generationStarted('quiet');
+    assert.equal(r.engine.generating,true);assert.equal(r.engine.controller.signal.aborted,true);
+});
+
+test('authoritative idle state repairs a missing generation end and drains the queue without a new reply',async()=>{
+    const r=rig();ready(r);let active=true;r.host.generationActive=async()=>active;
+    r.engine.generationStarted();await r.engine.refreshAll();assert.equal(r.engine.snapshot().rebuildQueued,true);
+    active=false;await r.engine.tick();await r.engine.tick();await r.engine.tick();
+    assert.equal(r.engine.snapshot().rebuildQueued,false);assert.equal(r.engine.snapshot().rebuild.complete,true);assert.equal(r.stats().calls,1);
+});
+
+test('a late end event cannot drain a queue while the host is still generating',async()=>{
+    const r=rig();ready(r);r.host.generationActive=async()=>true;
+    await r.engine.refreshAll();r.engine.selectController=new AbortController();await r.engine.generationEnded();await r.engine.tick();
+    assert.equal(r.engine.selectController.signal.aborted,false);
+    assert.equal(r.engine.snapshot().rebuildQueued,true);assert.equal(r.engine.snapshot().rebuild,null);assert.equal(r.stats().calls,0);
+});
+
+test('a delayed idle probe cannot overwrite a newer generation start',async()=>{
+    const r=rig();let resolve;r.host.generationActive=()=>new Promise(done=>{resolve=done;});
+    const check=r.engine.reconcileGeneration();r.engine.generationStarted();resolve(false);await check;
+    assert.equal(r.engine.generating,true);
+});
+
+test('cancel queued rebuild preserves the main selection and does not restart after generation ends',async()=>{
+    const r=rig();ready(r);const before=JSON.stringify(r.c.chat);r.engine.generationStarted();await r.engine.refreshAll();
+    r.engine.selectController=new AbortController();const epoch=r.engine.epoch;
+    await r.engine.stopRebuild();assert.equal(r.engine.selectController.signal.aborted,false);assert.equal(r.engine.epoch,epoch);
+    assert.equal(r.engine.snapshot().rebuildQueued,false);r.engine.generationEnded();await r.engine.tick();
+    assert.equal(r.stats().calls,0);assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.snapshot().rebuild,null);
+});
+
+test('cancelling on the generation-ended boundary prevents a deferred queue from reviving',async()=>{
+    const r=rig();ready(r);r.engine.generationStarted();await r.engine.refreshAll();r.engine.generationEnded();
+    await r.engine.stopRebuild();await new Promise(resolve=>setTimeout(resolve,0));await r.engine.tick();
+    assert.equal(r.engine.snapshot().rebuildQueued,false);assert.equal(r.engine.snapshot().rebuild,null);assert.equal(r.stats().calls,0);
+});
+
+test('cancellation during cache commit rolls back the staged job and is not automatically resumed',async()=>{
+    const r=rig();let release,entered;const gate=new Promise(done=>{entered=done;}),put=r.cache.putMany.bind(r.cache);let first=true;
+    r.cache.putMany=async(...args)=>{await put(...args);if(first){first=false;entered();await new Promise(done=>{release=done;});}};
+    const start=r.engine.refreshAll();await gate;const stopping=r.engine.stopRebuild();assert.equal(r.engine.snapshot().stopping,true);
+    release();await Promise.all([start,stopping]);await r.engine.tick();
+    assert.equal(r.engine.snapshot().rebuild,null);assert.equal(r.c.chat[0].extra[KEY],undefined);assert.equal(r.stats().calls,0);
+    assert.equal(await r.cache.get('records','a:'+bookPages(r.c.chat)[0].hash),null);assert.equal(r.cache.owner,null);
+});
+
+test('failed chat save restores both records and cache instead of leaving a runnable phantom job',async()=>{
+    const r=rig();ready(r);await r.engine.maintenance;const old=structuredClone(bookPages(r.c.chat)[0].record);await r.cache.put('records','a:'+old.hash,old);
+    r.host.save=async()=>{throw Error('save rejected');};await assert.rejects(r.engine.refreshAll(),/save rejected/);
+    assert.deepEqual(bookPages(r.c.chat)[0].record,old);assert.deepEqual(await r.cache.get('records','a:'+old.hash),old);
+    assert.equal(r.engine.resetting,false);assert.equal(r.engine.snapshot().rebuild,null);assert.equal(r.cache.owner,null);
+});
+
+test('stop during a slow summary discards its late result and does not resume through automatic memory',async()=>{
+    const r=rig();let finish,calls=0;r.host.complete=async()=>{calls++;return new Promise(resolve=>{finish=resolve;});};
+    await r.engine.refreshAll();const work=r.engine.tick();await new Promise(resolve=>setTimeout(resolve,0));
+    const stopped=r.engine.stopRebuild();finish('{"summary":"取消後才到的結果"}');await Promise.all([work,stopped]);await r.engine.tick();
+    assert.equal(calls,1);assert.equal(bookPages(r.c.chat)[0].record.done,false);assert.equal(r.engine.autoPages.size,0);assert.equal(r.engine.snapshot().rebuild.pending,0);
+    r.host.complete=async()=>{calls++;return '{"summary":"真正的新回覆"}';};r.c.chat.push(message('未來的新回覆',1));r.engine.newResponse();await r.engine.tick();assert.equal(calls,2);
+});
+
+test('cancel during vector work preserves a completed new summary and stops inference',async()=>{
+    const r=rig();ready(r);await r.engine.refreshAll();await r.engine.tick();const summary=bookPages(r.c.chat)[0].record.summary;let started;
+    const gate=new Promise(resolve=>{started=resolve;});r.embedder.embed=async(_texts,signal)=>new Promise((_resolve,reject)=>{started();signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});
+    const work=r.engine.tick();await gate;await r.engine.stopRebuild();await work;await r.engine.tick();
+    assert.equal(bookPages(r.c.chat)[0].record.summary,summary);assert.equal(bookPages(r.c.chat)[0].record.done,true);assert.equal(r.engine.snapshot().rebuild.pending,0);assert.equal(r.stats().calls,1);
+});
+
+test('deleting a pending page while stopping does not prevent stopping the surviving pages',async()=>{
+    const r=rig([message('待刪除頁',0),message('仍存在頁',1)]);ready(r);await r.engine.refreshAll();let finish;
+    r.host.complete=()=>new Promise(resolve=>{finish=resolve;});const work=r.engine.tick();await new Promise(resolve=>setTimeout(resolve,0));
+    const stop=r.engine.stopRebuild();r.c.chat.splice(0,1);r.engine.changed({deleted:true});finish('{"summary":"過時"}');await Promise.all([work,stop]);
+    assert.equal(bookPages(r.c.chat)[0].record.summary,'仍存在頁');assert.equal(r.engine.snapshot().rebuild.pending,0);assert.equal(r.engine.stopping,false);
+});
+
+test('switching chats drops the waiting request without writing to either chat',async()=>{
+    const r=rig();ready(r);const old=JSON.stringify(r.c.chat);r.engine.generationStarted();await r.engine.refreshAll();
+    const previous=r.c.chat;r.c.chat=[message('另一聊天',0)];r.c.chatId='b';r.engine.changed();r.engine.generationEnded();await r.engine.tick();
+    assert.equal(r.engine.snapshot().rebuildQueued,false);assert.equal(r.c.chat[0].extra[KEY],undefined);assert.equal(JSON.stringify(previous),old);assert.equal(r.stats().calls,0);
+});
+
+test('invalid targets are rejected before creating a generation wait queue',async()=>{
+    const r=rig([]);r.engine.generationStarted();await assert.rejects(r.engine.refreshAll(),/沒有可整理/);assert.equal(r.engine.queuedRebuild,null);
+});
+
+test('generation beginning during setup cannot reset existing records',async()=>{
+    const r=rig();ready(r);const before=JSON.stringify(r.c.chat);let release;
+    r.engine.maintenance=new Promise(resolve=>{release=resolve;});const pending=r.engine.refreshAll();await new Promise(resolve=>setTimeout(resolve,0));
+    r.engine.generationStarted();release();await assert.rejects(pending,/正文已開始/);assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.resetting,false);
+});
+
+test('failed stop persistence suspends further model calls until stop can be saved',async()=>{
+    const r=rig();ready(r);await r.engine.refreshAll();const save=r.host.save;r.host.save=async()=>{throw Error('save unavailable');};
+    await assert.rejects(r.engine.stopRebuild(),/save unavailable/);await r.engine.tick();await r.engine.tick();
+    assert.equal(r.stats().calls,0);assert.equal(r.engine.snapshot().stopFailed,true);assert.equal(r.engine.snapshot().rebuild.pending,1);
+    r.host.save=save;await r.engine.stopRebuild();await r.engine.tick();
+    assert.equal(r.engine.snapshot().stopFailed,false);assert.equal(r.engine.snapshot().rebuild.pending,0);assert.equal(r.stats().calls,0);
+});
+
 test('manual vector failure reports fallback and does not repeat paid summaries endlessly',async()=>{
     const r=rig();ready(r);r.engine.toggle(false);await r.engine.refreshAll();r.embedder.embed=async()=>{throw Error('wasm');};
     for(let i=0;i<4;i++)await r.engine.tick();assert.equal(r.stats().calls,1);assert.equal(r.engine.snapshot().rebuild.complete,true);

@@ -6,7 +6,7 @@
 const listeners=new Map();
 const names=['APP_READY','CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_DELETED','MESSAGE_SWIPED','MESSAGE_SENT','MESSAGE_RECEIVED','CHARACTER_MESSAGE_RENDERED','USER_MESSAGE_RENDERED','GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED','MAIN_API_CHANGED','CHATCOMPLETION_SOURCE_CHANGED','CHATCOMPLETION_MODEL_CHANGED','CONNECTION_PROFILE_LOADED','CHAT_COMPLETION_SETTINGS_READY'];
 const eventTypes=Object.fromEntries(names.map(x=>[x,x]));
-window.events={on:(type,fn)=>{if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn);},removeListener:(type,fn)=>listeners.set(type,(listeners.get(type)||[]).filter(x=>x!==fn)),emit:async(type,...args)=>{for(const fn of listeners.get(type)||[])await fn(...args);}};
+window.events={on:(type,fn)=>{if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn);},removeListener:(type,fn)=>listeners.set(type,(listeners.get(type)||[]).filter(x=>x!==fn)),emit:async(type,...args)=>{if(type==='GENERATION_STARTED'&&!args[2]&&args[0]!=='quiet')window.fixtureGenerating=true;if(['GENERATION_ENDED','GENERATION_STOPPED'].includes(type))window.fixtureGenerating=false;for(const fn of listeners.get(type)||[])await fn(...args);}};
 window.testCalls=[];window.saves=0;
 const chat=Array.from({length:7},(_,i)=>({name:i%2?'船長':'玩家',is_user:i%2===0,send_date:'fixture-'+i,
  mes:[
@@ -22,7 +22,7 @@ const saved=localStorage.getItem('folio-fixture-chat');if(saved)chat.splice(0,ch
 window.testContext={chat,chatId:'fictional-fixture',characterId:0,characters:[{avatar:'synthetic.png'}],groupId:null,chatMetadata:{},mainApi:'openai',
  extensionSettings:JSON.parse(localStorage.getItem('folio-fixture-settings')||'{"folio":{"enabled":true,"account":"fixture","helperConnection":"current","helperModel":"fixture-mini"}}'),eventSource:events,eventTypes,
  chatCompletionSettings:{chat_completion_source:'custom',custom_model:'fixture-large',custom_url:'https://existing-provider.invalid/v1',openai_max_tokens:2000,stream_openai:true},
- getRequestHeaders:()=>({'Content-Type':'application/json'}),getTokenCountAsync:async(text)=>Math.ceil(text.length*1.5),
+ isGenerating:()=>!!window.fixtureGenerating,getRequestHeaders:()=>({'Content-Type':'application/json'}),getTokenCountAsync:async(text)=>Math.ceil(text.length*1.5),
  saveChat:async()=>{window.saves++;localStorage.setItem('folio-fixture-chat',JSON.stringify(chat));},
  saveSettingsDebounced:()=>localStorage.setItem('folio-fixture-settings',JSON.stringify(testContext.extensionSettings))};
 window.SillyTavern={getContext:()=>testContext};

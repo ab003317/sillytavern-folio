@@ -85,7 +85,7 @@ with sync_playwright() as p:
         failure['next']=True;page.get_by_role('button',name='重新整理此頁',exact=True).click()
         page.wait_for_function("document.querySelector('.folio-page-work').textContent.includes('等待重試')")
         assert page.locator('.folio-reader .folio-summary-text').inner_text()==old
-        page.get_by_role('button',name='停止本次重整',exact=True).click()
+        page.locator('#folio-view-pages').get_by_role('button',name='停止本次重整',exact=True).click()
         page.wait_for_function("[...document.querySelectorAll('.folio-rebuild-status')].some(e=>e.textContent.includes('已停止'))")
         assert page.locator('.folio-reader .folio-summary-text').inner_text()==old
         assert page.evaluate('testContext.chat[1].extra.folio_memory.done')
