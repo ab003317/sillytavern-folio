@@ -4,7 +4,7 @@ import {mergeUsage,usageView,USAGE_LIMIT,usageOverview,playerOwner,RESPONSE_KEY}
 
 test('body overview never counts player-only matches as a successful recall',()=>{
     const record={items:[{role:'user',index:0,final:true},{role:'assistant',index:1,final:false},{role:'assistant',index:3,final:true,recent:true}],candidates:[{index:1,selected:true}],skipped:[]};
-    assert.deepEqual(usageOverview(record),{bodies:1,recalled:0,recent:1,retained:0,unverified:1,players:1,selected:1,skipped:0});
+    assert.deepEqual(usageOverview(record),{bodies:1,recalled:0,recent:1,retained:0,partials:0,unverified:1,players:1,selected:1,skipped:0});
     record.items[1].final=true;assert.equal(usageOverview(record).recalled,1);
     record.mode='building';record.candidates=[];assert.equal(usageOverview(record).recalled,0);assert.equal(usageOverview(record).retained,1);
 });

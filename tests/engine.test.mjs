@@ -644,6 +644,14 @@ test('selected older page carries its player context exactly once and never its 
     assert.equal(core.filter(m=>m.send_date==='t1').length,1);assert.equal(core.filter(m=>m.send_date==='t0').length,1);assert.ok(!JSON.stringify(core.map(m=>m.mes)).includes('這是目錄'));
     assert.ok(r.engine.last.candidates.find(c=>c.id==='p1').selected);
 });
+test('selected body that cannot fit whole is sent as a relevant source excerpt instead of disappearing',async()=>{
+    const old='港口藍色信件的交付約定。'+'無關長段。'.repeat(500),r=rig([message('舊背景',0,true),message(old,1),message('近期背景',2,true),message('近期正文',3),message('藍色信件後來如何？',4,true)]);ready(r);
+    r.host.memory=()=>({recentPages:1,recallPages:8});r.host.complete=async()=>'\u007b"ids":["p1"],"reasons":{"p1":"藍色信件約定"}\u007d';
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,800,()=>assert.fail('abort'),'normal');
+    const recalled=r.engine.last.items.find(x=>x.index===1);
+    assert.equal(recalled.partial,true);assert.match(recalled.body,/港口藍色信件/);assert.ok(recalled.body.length<old.length);assert.equal(r.engine.last.skipped.length,0);
+    assert.ok(core.some(m=>m.mes===recalled.body));assert.ok(!core.some(m=>m.mes===old));
+});
 test('final request audit distinguishes removal and repeated text without double matching',async()=>{
     const r=rig([message('same',0),message('same',1),message('question',2,true)]),core=structuredClone(r.c.chat);
     r.engine.changed();

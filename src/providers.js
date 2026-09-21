@@ -52,7 +52,7 @@ export function providerRequest(config,{messages,selection=false,models=false,ma
     if(models&&provider==='claude')Object.assign(body,{chat_completion_source:'custom',custom_url:baseUrl,reverse_proxy:'',proxy_password:'',
         custom_include_headers:JSON.stringify({Authorization:'','x-api-key':apiKey,'anthropic-version':'2023-06-01'})});
     if(models)return body;
-    Object.assign(body,{model,messages,stream:false,type:'quiet',max_tokens:maxTokens??(selection?1200:850),include_reasoning:false,use_sysprompt:true});
+    Object.assign(body,{model,messages,stream:false,type:'quiet',max_tokens:maxTokens??1200,include_reasoning:false,use_sysprompt:true});
     if(temperature!=null)body.temperature=temperature;if(topP!=null)body.top_p=topP;
     // Omit sampling unless explicitly configured: some reasoning models reject it.
     if(p.source==='custom'&&/(?:^|\/)deepseek-(?:flash|pro|v4(?:[-/]|$))/i.test(model))

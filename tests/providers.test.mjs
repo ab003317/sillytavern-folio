@@ -43,7 +43,7 @@ test('explicit credential readback is role and destination bound; normal status 
 
 for(const provider of Object.keys(PROVIDERS))test(`${provider} routes its own endpoint/key/model for both generation and model list`,()=>{
     const c=config(provider),r=providerRequest(c,{messages:[{role:'user',content:'fixture'}]}),m=providerRequest(c,{models:true});
-    assert.equal(r.model,'fixture-model');assert.equal(r.stream,false);assert.equal(r.max_tokens,850);assert.equal(providerRequest(c,{selection:true}).max_tokens,1200);
+    assert.equal(r.model,'fixture-model');assert.equal(r.stream,false);assert.equal(r.max_tokens,1200);assert.equal(providerRequest(c,{selection:true}).max_tokens,1200);
     assert.equal(r.secret_id,'folio-no-inherited-secret');assert.equal(m.secret_id,'folio-no-inherited-secret');assert.equal(m.messages,undefined);
     if(['claude','google','openai'].includes(provider)){
         assert.equal(r.proxy_password,c.apiKey);assert.equal(r.reverse_proxy,provider==='google'?c.baseUrl.replace('/v1beta',''):c.baseUrl);

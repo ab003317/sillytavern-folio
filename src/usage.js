@@ -17,7 +17,7 @@ export function usageOverview(record) {
     const bodies=(record?.items??[]).filter(x=>x.role!=='user'),kept=bodies.filter(x=>x.final===true);
     const selected=new Set((record?.candidates??[]).filter(x=>x.selected).map(x=>x.index));
     const recalled=kept.filter(x=>!x.recent&&selected.has(x.index)).length,recent=kept.filter(x=>x.recent).length;
-    return {bodies:kept.length,recalled,recent,retained:kept.length-recalled-recent,unverified:bodies.length-kept.length,
+    return {bodies:kept.length,recalled,recent,retained:kept.length-recalled-recent,partials:kept.filter(x=>x.partial).length,unverified:bodies.length-kept.length,
         players:(record?.items??[]).filter(x=>x.role==='user'&&x.final===true).length,selected:selected.size,skipped:record?.skipped?.length??0};
 }
 

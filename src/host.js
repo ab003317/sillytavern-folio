@@ -1,4 +1,4 @@
-import { estimatedTokens } from './core.js';
+import { estimatedTokens, SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS } from './core.js';
 import { PROVIDERS, directConfig, providerRequest, modelIds, apiError } from './providers.js';
 import { memoryOptions, generationOptions, rolePrompt, checkContext } from './settings.js';
 import {mergeUsage,USAGE_KEY} from './usage.js';
@@ -14,6 +14,10 @@ export function helperPayload(model) {
 export function completionText(data) {
     const choice=data?.choices?.[0],message=choice?.message?.content??data?.content??data?.text;
     const text=Array.isArray(message)?message.filter(x=>x.type==='text').map(x=>x.text).join('\n'):message;
+    if(choice?.finish_reason==='length'){
+        const error=new Error('總結模型的輸出被截斷；插件會保留原記錄並重試，請勿把回覆長度設得過低');
+        error.name='FolioOutputLimitError';throw error;
+    }
     if(typeof text!=='string'||!text.trim()){
         const error=new Error(choice?.finish_reason==='length'?'助手用盡輸出額度但未回傳摘要；可能仍在思考，請改用非思考模型':'助手沒有回傳正文，請在記憶助手頁測試連線');
         error.name='FolioResponseError';throw error;
@@ -158,10 +162,11 @@ export class Host {
     configureMemory(input){this.settings().memory=memoryOptions(input);this.context().saveSettingsDebounced();}
     configureAdvanced(role,input){if(!MODEL_ROLES[role])throw new Error('未知模型用途');const value=generationOptions(input,role);this.settings().advanced??={};this.settings().advanced[role]=value;this.context().saveSettingsDebounced();}
     summaryChunkSize(){
-        const a=this.advanced('summary');if(!a.contextTokens)return 3600;
-        const available=a.contextTokens-a.maxTokens-estimatedTokens(rolePrompt('summary',a,this.memory()))-estimatedTokens('背'.repeat(1200))-256;
-        if(available<300)throw new Error('總結上下文不足以容納提示詞與玩家背景；請增加上下文長度或縮短提示詞');
-        return Math.max(180,Math.min(3600,Math.floor(available/1.5)));
+        const a=this.advanced('summary');if(!a.contextTokens)return SUMMARY_CHUNK_CHARS;
+        const envelope=JSON.stringify({speaker:'角色',contextBefore:'背'.repeat(SUMMARY_CONTEXT_CHARS),playerInput:'玩'.repeat(SUMMARY_CONTEXT_CHARS),text:''});
+        const available=a.contextTokens-a.maxTokens-estimatedTokens(rolePrompt('summary',a,this.memory()))-estimatedTokens(envelope)-128;
+        if(available<270)throw new Error('總結上下文設定太小，連一小段正文都放不下；請把上下文長度設為 0（自動）或提高上限');
+        return Math.max(180,Math.min(SUMMARY_CHUNK_CHARS,Math.floor(available/1.5)));
     }
     async fetchModels(role,input,{signal}={}) {
         if(!MODEL_ROLES[role])throw new Error('未知模型用途');

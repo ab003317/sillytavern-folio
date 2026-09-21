@@ -1,7 +1,16 @@
 import { KEY, MODEL, bookPages, isStoryMessage, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
-    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, SUMMARY_SYSTEM, SELECT_SYSTEM } from './core.js';
+    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM,
+    SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS } from './core.js';
 import { uid } from './host.js';
 import { mergeUsage, usageView, bindResponse } from './usage.js';
+
+function bodyWindow(text,query,limit){
+    if(text.length<=limit)return text;
+    const needles=[...new Set(terms(query).filter(x=>x.length>=2))].sort((a,b)=>b.length-a.length);
+    const lower=text.toLowerCase();let at=needles.map(x=>lower.indexOf(x)).find(x=>x>=0);if(at==null)at=Math.floor(text.length/2);
+    const start=Math.max(0,Math.min(text.length-limit,at-Math.floor(limit*.4))),end=Math.min(text.length,start+limit);
+    return `${start?'…':''}${text.slice(start,end)}${end<text.length?'…':''}`;
+}
 
 export class Engine {
     constructor(host, cache, embedder, notify = () => {}) {
@@ -126,7 +135,8 @@ export class Engine {
             playerInput:p.playerInput,title:p.record?.title||p.record?.rebuild?.previous?.title||excerpt(p.body,32),summary:(!p.record?.done?p.record?.rebuild?.previous?.summary:'')||p.record?.summary||p.record?.parts?.join('\n')||'',
             ready:!!p.record?.done,indexed:!!p.record?.done&&this.vectors.has(this.vectorKey(p.record)),pinned:!!p.record?.pinned,
             rebuilding:this.pendingRebuild(p.record),rebuilt:!!p.record?.done&&!!p.record?.rebuild&&!p.record.rebuild.cancelled,previousSummary:!p.record?.done&&!!p.record?.rebuild?.previous?.summary,
-            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body,p.record?.chunkSize??3600).length,edited:!!p.record?.edited,hidden:!!p.message.is_system,automatic:this.autoPages.has(p.message)}));
+            parts:p.record?.parts?.length??0,totalParts:splitBody(p.body,p.record?.chunkSize??SUMMARY_CHUNK_CHARS).length,droppedEvidence:p.record?.droppedEvidence??0,
+            edited:!!p.record?.edited,hidden:!!p.message.is_system,automatic:this.autoPages.has(p.message)}));
         const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role,true)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
         const usageViews=this.usageIdentity===this.host.identity()?this.usageViews():[],usageRecords=usageViews.filter(x=>x.resultState==='present');
         const total=entries.length,ready=entries.filter(p=>p.ready).length,indexed=entries.filter(p=>p.indexed).length,rebuild=this.rebuildState();
@@ -410,14 +420,15 @@ export class Engine {
                 if(indexMode&&this.vectors.has(this.vectorKey(r)))this.indexPages.delete(p.message);
             }
             if(!target){this.work=null;this.setStatus(manualMode?this.warning?'摘要已完成；向量尚待補齊':manual[0]?.record?.rebuild?.mode==='vectors'?'本機向量已補齊；已有摘要未重做':'本次重新整理已完成':indexMode?this.warning?'人工摘要已保存；向量暫用文字檢索':'人工摘要與向量已就緒':'已就緒；只會自動整理接下來的新回覆');nextDelay=manualMode?700:15000;return;}
-            const p=target,r=p.record;r.chunkSize??=r.parts.length?3600:(this.host.summaryChunkSize?.()??3600);const parts=splitBody(p.body,r.chunkSize);
+            const p=target,r=p.record;r.chunkSize??=r.parts.length?3600:(this.host.summaryChunkSize?.()??SUMMARY_CHUNK_CHARS);const parts=splitBody(p.body,r.chunkSize);
             this.work={stage:'summary',page:p.number,part:r.parts.length+1,total:parts.length};
             this.setStatus(`正在整理第 ${p.number} 頁（${r.parts.length+1}/${parts.length} 段）`);active(p);
             if(parts[r.parts.length]!==undefined){
                 const partIndex=r.parts.length,text=parts[partIndex],usesDefault=typeof this.host.advanced==='function'&&!this.host.advanced('summary').prompt;
                 const previous=partIndex?parts[partIndex-1]:pages.filter(page=>page.index<p.index).at(-1)?.body??'';
-                const raw=await this.host.complete(SUMMARY_SYSTEM,JSON.stringify({speaker:p.name,contextBefore:usesDefault?String(previous).slice(-600):'',playerInput:excerpt(p.playerInput,600),text}),{signal});active(p);
+                const raw=await this.host.complete(SUMMARY_SYSTEM,JSON.stringify({speaker:p.name,contextBefore:usesDefault?String(previous).slice(-SUMMARY_CONTEXT_CHARS):'',playerInput:excerpt(p.playerInput,SUMMARY_CONTEXT_CHARS),text}),{signal});active(p);
                 const parsed=parsePageSummary(raw,text,{requireEvidence:usesDefault});r.parts.push(parsed.summary);r.title||=parsed.title;
+                if(parsed.droppedEvidence)r.droppedEvidence=(r.droppedEvidence??0)+parsed.droppedEvidence;
             }
             Object.assign(r,{summary:r.parts.join('\n'),done:r.parts.length===parts.length,model:this.host.models?.summary??this.host.model,updatedAt:Date.now()});
             if(r.done&&r.rebuild)delete r.rebuild.previous;
@@ -440,6 +451,32 @@ export class Engine {
     rememberTrace(trace) {
         this.last=trace;this.notice='';this.emit();const identity=this.host.identity();
         if(identity)this.cache.put('records','trace:'+identity,structuredClone(trace)).catch(()=>{});
+    }
+    async relevantBody(page,query,queryVector,capacity,signal,active){
+        if(capacity<96)return null;
+        const sourceParts=splitBody(page.body,page.record?.chunkSize??SUMMARY_CHUNK_CHARS);
+        if(!sourceParts.length)return null;
+        const summaries=sourceParts.map((part,i)=>page.record?.parts?.[i]||excerpt(part,800));let vectors=[];
+        try{vectors=await this.embedder.embed(summaries.map(x=>excerpt(x,800)),signal,true);active();}
+        catch(e){if(signal.aborted||e.name==='AbortError')throw e;active();}
+        const rows=summaries.map((summary,i)=>({id:`${page.id}:${i}`,index:i,summary,vectors:vectors[i]?[vectors[i]]:[]}));
+        const ranked=rankCandidates(rows,query,queryVector,rows.length),order=ranked.length?ranked:rows,chosen=[];
+        const compose=ids=>ids.slice().sort((a,b)=>a-b).map(i=>sourceParts[i]).join('\n\n[… 本頁中間未取用的原文 …]\n\n');
+        let body='',tokens=0;
+        for(const row of order){
+            if(chosen.length>=3)break;
+            const next=[...chosen,row.index],candidate=compose(next),cost=await this.host.count(candidate);active();
+            if(cost<=capacity){chosen.push(row.index);body=candidate;tokens=cost;}
+        }
+        if(body)return {body,tokens,parts:chosen.slice().sort((a,b)=>a-b),totalParts:sourceParts.length};
+        const best=order[0]?.index??0,full=sourceParts[best],fullCost=await this.host.count(full);active();
+        let chars=Math.min(full.length,Math.max(60,Math.floor(full.length*capacity/Math.max(1,fullCost)*.82)));
+        while(chars>=40){
+            const candidate=`[本頁原文節選]\n${bodyWindow(full,query,chars)}`,cost=await this.host.count(candidate);active();
+            if(cost<=capacity)return {body:candidate,tokens:cost,parts:[best],totalParts:sourceParts.length};
+            chars=Math.floor(chars*.72);
+        }
+        return null;
     }
     async intercept(chat,contextSize,abort,type,options={}) {
         if(this.conflict||this.host.context().mainApi!=='openai'||!this.host.settings().enabled||['quiet','impersonate'].includes(type)||!chat.length)return;
@@ -497,7 +534,7 @@ export class Engine {
             const older=entries.filter(p=>!recent.picked.has(p.i));
             const query=options.query||cleanBody(original.findLast(m=>m.is_user)?.mes??original.at(-1).mes);
             const trace={id:uid(),stamps,createdAt:Date.now(),type,receiptVersion:2,preview:!!options.preview,query,mode:'recent',budget:budget.history,beforeTokens:costs.reduce((a,b)=>a+b,0),candidates:[],items:[],skipped:[]};
-            let chosen=new Set(recent.picked),used=recent.used,warning='';
+            let chosen=new Set(recent.picked),used=recent.used,warning='';const overrides=new Map(),partialInfo=new Map();
             const reasons=new Map([...chosen].map(i=>[i,cleaned[i].is_user?'近期玩家輸入':'近期正文']));
             if(older.some(p=>!p.ready)){
                 trace.mode='building';warning=`${older.filter(p=>!p.ready).length} 頁舊正文尚未完成摘要；這次保留原歷史，不用正文節錄冒充目錄`;
@@ -524,19 +561,29 @@ export class Engine {
                 trace.candidates=candidates.map(p=>({id:p.id,index:p.index,number:p.number,title:p.title,summary:p.summary,semantic:p.semantic,lexical:p.lexical,selected:ids.includes(p.id)||p.pinned,reason:p.pinned?'已釘選':selectedReasons[p.id]??(ids.includes(p.id)?'匹配備援':'助手未選用')}));
                 for(const p of [...older.filter(p=>p.pinned),...ids.map(id=>candidates.find(p=>p.id===id)).filter(Boolean)]){
                     if(chosen.has(p.i))continue;
-                    const positions=[...p.userIndices,p.i].filter(i=>!chosen.has(i)),cost=positions.reduce((n,i)=>n+costs[i],0);
-                    if(used+cost>Math.max(budget.history,recent.used)){trace.skipped.push({index:p.index,number:p.number,tokens:cost,reason:'完整正文與當時玩家輸入超出剩餘容量'});continue;}
+                    const positions=[...p.userIndices,p.i].filter(i=>!chosen.has(i)),cost=positions.reduce((n,i)=>n+costs[i],0),limit=Math.max(budget.history,recent.used);
+                    if(used+cost>limit){
+                        const available=limit-used,userPositions=positions.filter(i=>i!==p.i),userCost=userPositions.reduce((n,i)=>n+costs[i],0);
+                        let keptUsers=false,fit=null;
+                        if(userCost&&available-userCost>=128){fit=await this.relevantBody(p,query,queryVector,available-userCost,signal,active);keptUsers=!!fit;}
+                        if(!fit)fit=await this.relevantBody(p,query,queryVector,available,signal,active);
+                        if(!fit){trace.skipped.push({index:p.index,number:p.number,tokens:cost,reason:'剩餘容量連一段相關原文也放不下'});continue;}
+                        if(keptUsers)for(const i of userPositions){chosen.add(i);reasons.set(i,'所選正文的玩家背景');}
+                        chosen.add(p.i);overrides.set(p.i,fit.body);partialInfo.set(p.i,{partial:true,sourceParts:fit.parts,totalSourceParts:fit.totalParts});
+                        reasons.set(p.i,p.pinned?'已釘選；全文過長，保留相關原文片段':`${selectedReasons[p.id]??'目錄選中'}；全文過長，保留相關原文片段`);
+                        used+=fit.tokens+(keptUsers?userCost:0);continue;
+                    }
                     for(const i of positions){chosen.add(i);reasons.set(i,cleaned[i].is_user?'所選正文的玩家背景':p.pinned?'已釘選':selectedReasons[p.id]??'目錄選中');}used+=cost;
                 }
             }
             active();const ordered=[...chosen].sort((a,b)=>a-b);
             // While the catalogue is incomplete, do not change even the source formatting.
-            const result=ordered.map(i=>trace.mode==='building'?original[i]:cleaned[i]);
+            const result=ordered.map(i=>trace.mode==='building'?original[i]:overrides.has(i)?{...cleaned[i],mes:overrides.get(i)}:cleaned[i]);
             trace.items=ordered.map((i,j)=>{
                 const page=entries.find(p=>p.i===i),owner=page??entries.find(p=>p.userIndices.includes(i));
                 return {index:this.sourceIndex(original[i]),sourceStamp:stamps[this.sourceIndex(original[i])],number:page?.number,title:page?.title,name:original[i].name,
                     role:original[i].is_user?'user':'assistant',wireRole:original[i].extra?.type==='narrator'?'system':original[i].is_user?'user':'assistant',pageIndex:owner?.index,
-                    body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),final:null};
+                    body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),...partialInfo.get(i),final:null};
             });
             Object.assign(trace,{tokens:used,model:trace.candidates.length?(this.host.models?.selection??this.host.model):'',stage:options.preview?'preview':'awaiting-final'});
             if(!options.preview){chat.splice(0,chat.length,...result);this.awaitingFinal=true;this.generationGuard={identity,stamps};}

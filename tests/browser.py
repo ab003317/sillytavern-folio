@@ -100,7 +100,7 @@ with sync_playwright() as p:
         # Shrink context to require history selection; keep latest user and real bodies.
         selected=page.evaluate("""async()=>{
           const original=JSON.stringify(testContext.chat);const core=structuredClone(testContext.chat);let aborted=false;
-          await folioIntercept(core,520,()=>{aborted=true;},'normal');
+          await folioIntercept(core,300,()=>{aborted=true;},'normal');
           await events.emit('CHAT_COMPLETION_SETTINGS_READY',{type:'normal',messages:core.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
           const unchanged=JSON.stringify(testContext.chat)===original;
           const reply={mes:'合成角色回覆：我記得冬天前要把信送到山城。',name:'船長',is_user:false,send_date:'fixture-result',extra:{}};
@@ -159,6 +159,7 @@ with sync_playwright() as p:
         assert not external,external
         assert not errors,errors
         result={'passed':True,'model':inference,'summaries':3,'total_api_requests':len(calls),'selected_count':selected['count'],'conflict_takeover':True,'external_requests':len(external),'browser_errors':errors}
+        (OUT/'browser-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
         print(json.dumps(result,ensure_ascii=False),flush=True)
     finally:
         browser.close()

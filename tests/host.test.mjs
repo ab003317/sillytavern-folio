@@ -18,7 +18,7 @@ test('known DeepSeek Flash/Pro helper disables thinking through custom backend p
     assert.equal(helperPayload('other-mini').custom_include_body,undefined);
 });
 test('empty thinking-only length response is an error, not a successful summary',()=>{
-    assert.throws(()=>completionText({choices:[{message:{content:'',reasoning_content:'private reasoning'},finish_reason:'length'}]}),/用盡输出額度|用盡輸出額度/);
+    assert.throws(()=>completionText({choices:[{message:{content:'',reasoning_content:'private reasoning'},finish_reason:'length'}]}),/輸出被截斷/);
     assert.equal(completionText({choices:[{message:{content:'{"summary":"正文"}'}}]}),'{"summary":"正文"}');
 });
 test('connection-manager helper uses separate raw response, no preset, no global mutations',async()=>{

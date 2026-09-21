@@ -73,6 +73,7 @@ test('invalid advanced settings cannot replace saved values; reset restores defa
 test('default summaries are detailed retrieval cards instead of vague plot blurbs',()=>{
     const memory=memoryOptions({}),prompt=rolePrompt('summary',{},memory);
     assert.equal(memory.detail,'detailed');
+    assert.equal(generationOptions({},'summary').maxTokens,1200);
     assert.match(prompt,/180 至 350/);
     assert.match(prompt,/人物與實體/);
     assert.match(prompt,/事件與結果/);
@@ -83,6 +84,7 @@ test('default summaries are detailed retrieval cards instead of vague plot blurb
     assert.match(prompt,/主體不明/);
     assert.match(prompt,/contextBefore/);
     assert.match(prompt,/逐字 evidence/);
+    assert.match(prompt,/每欄最多 2 條/);
     assert.match(prompt,/"sections"/);
 });
 test('recent page setting preserves paired input and still observes available budget',()=>{
