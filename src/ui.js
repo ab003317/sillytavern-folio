@@ -121,6 +121,7 @@ export function mountUI(engine){
         if(state.stopping)return '正在中止本次助手工作；保留完成頁，未完成頁恢復原摘要。';
         if(state.stopFailed)return '停止狀態未能保存；本視窗不再發出重整請求。請按「重試停止」，保存成功前刷新可能恢復未完成任務。';
         if(state.rebuildQueued)return `已接受操作；本次角色回覆完成後，會${state.rebuildMode==='vectors'?'只補齊本機向量，不呼叫 API':state.rebuildMode==='missing'?'只整理未整理的摘要／向量，保留已有有效摘要':'重新整理全部正文'}。`;
+        if(state.leaseWaiting&&!job)return '另一個視窗正在整理；完成後會自動接手。可按「停止本次重整」取消等待。';
         if(state.resetting&&!job)return '正在保存重新整理任務；正文不會被刪除。';
         if(!job)return '準備重新整理目前聊天。';
         const counts=job.mode==='vectors'?`向量 ${job.vectors}/${job.total} 頁 · 不呼叫 API`:`摘要 ${job.done}/${job.total} 頁 · 向量 ${job.vectors}/${job.total} 頁`;
@@ -149,7 +150,7 @@ export function mountUI(engine){
             if(!manualWasActive||state.rebuildQueued)manualJobId=null;if(job?.pending)manualJobId=job.id;
             clearTimeout(autoTimer);autoCompletion=false;manualWasActive=true;autoPopup.hidden=false;autoPopup.classList.toggle('folio-auto-error',!!state.warning);
             autoPopup.dataset.phase=state.rebuildQueued||state.resetting?'waiting':state.work?.stage??'summary';
-            autoPopupTitle.textContent=state.stopping?'正在停止本次重整':state.warning?'重新整理等待重試':state.rebuildQueued?'已排隊，等待回覆完成':state.resetting?'正在建立重新整理任務':state.rebuildMode==='vectors'?'正在補齊本機向量':'正在重新整理舊聊天';
+            autoPopupTitle.textContent=state.stopping?'正在停止本次重整':state.warning?'重新整理等待重試':state.rebuildQueued?'已排隊，等待回覆完成':state.leaseWaiting?'等待另一個視窗完成':state.resetting?'正在建立重新整理任務':state.rebuildMode==='vectors'?'正在補齊本機向量':'正在重新整理舊聊天';
             autoPopupDetail.textContent=rebuildText(job);autoPopupProgress.hidden=state.rebuildQueued||(state.resetting&&!job?.pending);setRebuildProgress(autoPopupProgress,job);autoRetry.hidden=state.stopFailed||state.stopping||!state.warning||state.resetting||state.rebuildQueued;return;
         }
         if(manualWasActive){
@@ -270,7 +271,7 @@ export function mountUI(engine){
         const job=state.rebuild;
         for(const f of rebuildPanels){
             const locked=state.stopping||state.resetting||!!job?.pending||state.rebuildQueued;
-            const working=state.stopping?'正在停止…':state.resetting?'正在保存重整任務…':job?.pending?'重新整理進行中':state.rebuildQueued?'已排隊，等待回覆完成':'';
+            const working=state.stopping?'正在停止…':state.leaseWaiting?'等待另一視窗…':state.resetting?'正在保存重整任務…':job?.pending?'重新整理進行中':state.rebuildQueued?'已排隊，等待回覆完成':'';
             f.all.disabled=locked||!state.total;f.missing.disabled=locked||state.vectorLoading||!state.missing;f.vectors.disabled=locked||state.vectorLoading||!state.vectorMissing;
             f.all.textContent=state.rebuildMode==='all'&&working?working:'一鍵重新整理全部';
             f.missing.textContent=state.rebuildMode==='missing'&&working?working:'一鍵整理未整理的';
@@ -279,7 +280,7 @@ export function mountUI(engine){
             f.detail.textContent=(state.rebuildQueued?rebuildText():`包含 ${state.hidden} 頁隱藏正文，不含系統通知。全部重做會覆蓋摘要並呼叫 API；補未整理保留已有摘要，只為缺摘要的頁呼叫 API。向量會自動在本機補齊，按鈕保留作手動重試。`)+(state.vectorLoading?'正在恢復／建立本機向量，待補數量核對中。':'')+(state.generating&&!state.rebuildQueued?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':'');
             f.stop.hidden=!(state.stopping||state.resetting||state.rebuildQueued||job?.pending);f.stop.disabled=!!state.stopping;f.stop.textContent=state.stopping?'正在停止…':state.stopFailed?'重試停止':state.rebuildQueued?'取消排隊':'停止本次重整';f.retry.hidden=state.stopFailed||state.stopping||!job?.pending||!state.warning;f.retry.disabled=state.busy;
             f.progress.hidden=state.rebuildQueued||(state.resetting&&!job?.pending)||!job;setRebuildProgress(f.progress,job);
-            f.outcome.textContent=state.stopping||state.stopFailed?rebuildText(job):state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':state.resetting&&!job?.pending?'正在建立手動重新整理任務。':job?`本次${job.mode==='vectors'?'向量補齊':'重整'}：${job.mode==='vectors'?'':`摘要 ${job.done}/${job.total} 頁，`}向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已保留，向量尚待補齊，可按「補齊本機向量」。':job.cancelled?'已停止。':'已完成。'}`:'';
+            f.outcome.textContent=state.stopping||state.stopFailed?rebuildText(job):state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':state.leaseWaiting&&!job?.pending?'另一個視窗正在整理；完成後會自動接手，可按「停止本次重整」取消等待。':state.resetting&&!job?.pending?'正在建立手動重新整理任務。':job?`本次${job.mode==='vectors'?'向量補齊':'重整'}：${job.mode==='vectors'?'':`摘要 ${job.done}/${job.total} 頁，`}向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已保留，向量尚待補齊，可按「補齊本機向量」。':job.cancelled?'已停止。':'已完成。'}`:'';
         }
     }
     function render(){renderRebuild();memoryOptions.render(state);if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}

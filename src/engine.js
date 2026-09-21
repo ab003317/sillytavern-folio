@@ -22,7 +22,7 @@ export class Engine {
         this.observedStamps=[];this.traceLoad=0;this.notice='';this.maintenance=Promise.resolve();this.generationGuard=null;
         this.status='等待開啟聊天'; this.warning='';
         this.resetting=false;this.idle=Promise.resolve();this.queuedRebuild=null;
-        this.generationVersion=0;this.rebuildOperation=null;this.rebuildSetup=Promise.resolve();this.stopping=false;this.stopTask=null;
+        this.generationVersion=0;this.rebuildOperation=null;this.rebuildSetup=Promise.resolve();this.stopping=false;this.stopTask=null;this.leaseWaiting=false;
         this.stopFailures=new Set();
         this.usages=[];this.usageIdentity='';this.usageLoad=0;this.usageWrite=Promise.resolve();this.usageError='';this.usageLoading=false;this.pendingUsage=null;
         this.autoPages=new Set();this.seenPages=new Set();this.indexPages=new Set();
@@ -153,7 +153,7 @@ export class Engine {
         return {entries,total,ready,indexed,missing:total-indexed,summaryMissing:total-ready,vectorMissing:ready-indexed,vectorLoading:this.vectorLoading,hidden:entries.filter(p=>p.hidden).length,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
-            resetting:this.resetting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
+            resetting:this.resetting,leaseWaiting:this.leaseWaiting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
             usages:usageRecords,usageArchive:usageViews.filter(x=>x.resultState!=='present'),usageLoading:this.usageLoading,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
             apiMode:this.host.settings().apiMode??'main',apiSaving:!!this.host.apiSaveTask,mainModel:this.host.helper?.('summary')?.model??'',activeHelpers:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.helperStatus?.(role)])),memory:this.host.memory?.(),advanced:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.advanced?.(role)])),
             profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
@@ -298,6 +298,17 @@ export class Engine {
         const task=this.createRebuild(pages,operation);this.rebuildSetup=task;
         return task.finally(()=>{if(this.rebuildOperation===operation)this.rebuildOperation=null;});
     }
+    async waitForLease(identity,operation,validate) {
+        let announced=false;
+        while(true){
+            validate();
+            if(await this.cache.lease(identity,this.owner)){this.leaseWaiting=false;return true;}
+            if(!announced){announced=true;this.leaseWaiting=true;this.log('另一個視窗正在整理；本視窗會在它完成後自動接手');}
+            this.setStatus('另一個視窗正在整理；完成後會自動接手，可按「停止本次重整」取消');
+            await new Promise(resolve=>setTimeout(resolve,300));
+            if(operation.cancelled||this.disposed)throw new DOMException('重整已取消','AbortError');
+        }
+    }
     async createRebuild(pages,operation) {
         this.validateRebuild(pages,operation.mode);
         const identity=pages[0].identity;let locked=false;
@@ -305,7 +316,7 @@ export class Engine {
         const validate=()=>{if(operation.cancelled||this.disposed)throw new DOMException('重整已取消','AbortError');this.assertPages(pages);if(this.generating)throw new Error('正文已開始生成；原摘要未改動，請完成後重新整理');};
         try{
             await this.reconcileGeneration();validate();this.cancel();await this.idle;await this.maintenance;validate();
-            locked=await this.cache.lease(identity,this.owner);if(!locked)throw new Error('另一個視窗正在整理，請稍後再試；原摘要未改動');
+            locked=await this.waitForLease(identity,operation,validate);
             validate();
             const live=this.assertPages(pages);
             // A background summary may have completed while we waited for idle/lease.
@@ -325,7 +336,7 @@ export class Engine {
             if(operation.cancelled)return;
             if(identity===this.host.identity()){this.warning=String(e.message??e);this.setStatus('未能啟動重整；請檢查錯誤後重試');}throw e;
         }finally{
-            if(locked)await this.cache.lease(identity,this.owner,true).catch(()=>{});this.resetting=false;this.emit();this.schedule(0);
+            if(locked)await this.cache.lease(identity,this.owner,true).catch(()=>{});this.leaseWaiting=false;this.resetting=false;this.emit();this.schedule(0);
         }
     }
     stopRebuild() {
