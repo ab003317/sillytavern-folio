@@ -35,7 +35,7 @@ export function compactUsage(record,chat=[]) {
         const {body,...rest}=item;return {...rest,bodyFromSource:true,bodyLength:body.length};
     });
     const candidates=(record.candidates??[]).map(({summary,...c})=>({...c,summaryFromSource:true}));
-    const summary=record.summary?.body?(({body,...rest})=>({...rest,bodyOmitted:true}))(record.summary):record.summary;
+    const summary=record.summary?.body?(({body,parts,...rest})=>({...rest,bodyOmitted:true}))(record.summary):record.summary;
     return {...record,compact:true,items,candidates,...(summary?{summary}:{})};
 }
 function rebuild(record,item,positions,chat){

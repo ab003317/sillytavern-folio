@@ -1,5 +1,5 @@
 import { KEY, MODEL, bookPages, isStoryMessage, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
-    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM, RECALL_NOTE_NAME, recallNote, DIGEST_HEADER, digestLine, estimatedTokens,
+    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM, RECALL_NOTE_NAME, recallNote, DIGEST_HEADER, DIGEST_CONTINUED, digestLine, estimatedTokens,
     SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS } from './core.js';
 import { uid } from './host.js';
 import { mergeUsage, usageView, bindResponse } from './usage.js';
@@ -517,18 +517,29 @@ export class Engine {
         }
         return null;
     }
-    // Oldest pages give way first: full entry, then title only, then omitted.
-    async digest(pages,room,active) {
+    // Summaries keep story order: each run of unsent pages becomes one narrator
+    // message between the bodies around it. Oldest pages give way first: full
+    // entry, then title only, then omitted.
+    async digest(pages,room,sent,active) {
         if(!pages.length||room<=0)return null;
-        pages=[...pages].sort((a,b)=>a.index-b.index);
-        const [head,...costs]=await Promise.all([this.host.count(DIGEST_HEADER),...pages.flatMap(p=>[this.host.count(digestLine(p)),this.host.count(digestLine(p,false))])]);active();
-        const mode=pages.map(()=>'full');let total=head+pages.reduce((n,_,i)=>n+costs[2*i],0),omitted=0;
-        for(let i=0;i<pages.length&&total>room;i++){total-=costs[2*i]-costs[2*i+1];mode[i]='title';}
+        pages=[...pages].sort((a,b)=>a.i-b.i);sent=[...sent];
+        const run=[];let r=0;
+        for(const [k,p] of pages.entries()){if(k&&sent.some(i=>i>pages[k-1].i&&i<p.i))r++;run.push(r);}
+        const [head,cont,...costs]=await Promise.all([this.host.count(DIGEST_HEADER),this.host.count(DIGEST_CONTINUED),...pages.flatMap(p=>[this.host.count(digestLine(p)),this.host.count(digestLine(p,false))])]);active();
+        const mode=pages.map(()=>'full');let total=head+cont*r+pages.reduce((n,_,k)=>n+costs[2*k],0),omitted=0;
+        for(let k=0;k<pages.length&&total>room;k++){total-=costs[2*k]-costs[2*k+1];mode[k]='title';}
         while(omitted<pages.length&&total>room){total-=costs[2*omitted+1];mode[omitted]='omit';omitted++;}
         if(omitted===pages.length)return null;
-        const lines=pages.flatMap((p,i)=>mode[i]==='omit'?[]:[digestLine(p,mode[i]==='full')]);
-        const body=[DIGEST_HEADER,...(omitted?[`（更早 ${omitted} 頁因容量省略）`]:[]),...lines].join('\n');
-        return {body,tokens:total,pages:pages.filter((_,i)=>mode[i]!=='omit').map(p=>p.number),titleOnly:pages.filter((_,i)=>mode[i]==='title').map(p=>p.number),omitted};
+        const blocks=[];
+        for(const [k,p] of pages.entries()){
+            if(mode[k]==='omit')continue;
+            let block=blocks.at(-1);
+            if(!block||block.run!==run[k]){
+                block={run:run[k],key:p.i,lines:blocks.length?[DIGEST_CONTINUED]:[DIGEST_HEADER,...(omitted?[`（更早 ${omitted} 頁因容量省略）`]:[])]};blocks.push(block);
+            }
+            block.lines.push(digestLine(p,mode[k]==='full'));
+        }
+        return {blocks:blocks.map(b=>({key:b.key,body:b.lines.join('\n')})),tokens:total,pages:pages.filter((_,k)=>mode[k]!=='omit').map(p=>p.number),titleOnly:pages.filter((_,k)=>mode[k]==='title').map(p=>p.number),omitted};
     }
     async intercept(chat,contextSize,abort,type,options={}) {
         if(this.conflict||this.host.context().mainApi!=='openai'||!this.host.settings().enabled||['quiet','impersonate'].includes(type)||!chat.length)return;
@@ -650,15 +661,18 @@ export class Engine {
                     body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),...partialInfo.get(i),final:null};
             });
             const note=memory.recallNote===false?null:await this.recallNote(recalled,overrides,cleaned,rankQuery,Math.max(budget.history,recent.used)-used,active);
+            if(note)used+=note.tokens;
+            const digest=memory.summaryBlock===false||trace.mode==='building'?null:await this.digest(pool.filter(p=>!chosen.has(p.i)),Math.max(budget.history,recent.used)-used,chosen,active);
+            if(digest){
+                // Each block takes the story position of its first page; no sent message lies inside a run.
+                const placed=[...ordered.map((i,j)=>[i,result[j]]),...digest.blocks.map(b=>[b.key,{name:RECALL_NOTE_NAME,is_user:false,is_system:false,send_date:'folio-digest',mes:b.body,extra:{type:'narrator',folio_summary:true}}])];
+                result.splice(0,result.length,...placed.sort((a,b)=>a[0]-b[0]).map(x=>x[1]));
+                used+=digest.tokens;trace.summary={body:digest.blocks.map(b=>b.body).join('\n\n'),parts:digest.blocks.map(b=>b.body),pages:digest.pages,titleOnly:digest.titleOnly,omitted:digest.omitted,tokens:digest.tokens,final:null};
+            }
             if(note){
                 const at=result.findLastIndex(m=>m.is_user);
                 result.splice(at<0?Math.max(0,result.length-1):at,0,{name:RECALL_NOTE_NAME,is_user:false,is_system:false,send_date:'folio-recall',mes:note.body,extra:{type:'narrator',folio_note:true}});
-                used+=note.tokens;trace.note={body:note.body,pages:note.pages,tokens:note.tokens,final:null};
-            }
-            const digest=memory.summaryBlock===false||trace.mode==='building'?null:await this.digest(pool.filter(p=>!chosen.has(p.i)),Math.max(budget.history,recent.used)-used,active);
-            if(digest){
-                result.unshift({name:RECALL_NOTE_NAME,is_user:false,is_system:false,send_date:'folio-digest',mes:digest.body,extra:{type:'narrator',folio_summary:true}});
-                used+=digest.tokens;trace.summary={body:digest.body,pages:digest.pages,titleOnly:digest.titleOnly,omitted:digest.omitted,tokens:digest.tokens,final:null};
+                trace.note={body:note.body,pages:note.pages,tokens:note.tokens,final:null};
             }
             Object.assign(trace,{tokens:used,model:trace.candidates.length?(this.host.models?.selection??this.host.model):'',stage:options.preview?'preview':'awaiting-final'});
             if(!options.preview){chat.splice(0,chat.length,...result);this.awaitingFinal=true;this.generationGuard={identity,stamps};}
@@ -707,7 +721,7 @@ export class Engine {
                 if(item.final)break;
             }
         }
-        for(const block of [this.last.note,this.last.summary])if(block){const needle=normalize(block.body);block.final=!!needle&&messages.some(m=>m.text.includes(needle));}
+        for(const block of [this.last.note,this.last.summary])if(block){const parts=(block.parts??[block.body]).map(normalize);block.final=parts.every(needle=>!!needle&&messages.some(m=>m.text.includes(needle)));}
         this.last.stage='observed';this.last.final={observedAt:Math.max(Date.now(),(this.usages[0]?.final?.observedAt??0)+1),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
         this.pendingUsage={identity:this.host.identity(),id:this.last.id,stamps:[...this.last.stamps],objects:[...(this.host.context().chat??[])],trace:structuredClone(this.last),type:this.last.type??body.type};
         this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；收到角色回覆後保存取用紀錄');

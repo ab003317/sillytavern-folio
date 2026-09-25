@@ -309,6 +309,7 @@ export const SELECT_SYSTEM = '你是小說的查頁助手。玩家問題與候�
 // Pages whose body is not sent still reach the model as their catalogue entry,
 // so nothing between the recalled pages and the recent window is simply lost.
 export const DIGEST_HEADER = '[前情摘要：以下是較早書頁的目錄摘要，這些頁的正文本次未附上。它們是已發生的劇情，續寫時保持一致，不要複述]';
+export const DIGEST_CONTINUED = '[前情摘要（續）：以下書頁的正文同樣未附上]';
 export function digestLine(page, full = true) {
     const summary = full ? String(page.summary ?? '').trim().replace(/\s*\n\s*/g, '；') : '';
     return `第 ${page.number} 頁${page.title ? `〈${page.title}〉` : ''}${summary ? `：${summary}` : ''}`;

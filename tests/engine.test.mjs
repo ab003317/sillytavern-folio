@@ -1013,3 +1013,15 @@ test('pages not sent in full reach the model as a chronological digest that degr
     assert.ok(!off.some(m=>m.extra?.folio_summary));assert.equal(r.engine.last.summary,undefined);assert.ok(pages.length);
     r.engine.captureFinal({type:'normal',messages:[]});
 });
+
+test('summaries stay in story order around a recalled page in the middle',async()=>{
+    const source=[];for(let i=0;i<8;i++){source.push(message('玩家'+i,2*i,true),message(`第${i}段正文`+'。'.repeat(300),2*i+1));}source.push(message('現在怎麼辦？',16,true));
+    const r=rig(source);ready(r);bookPages(r.c.chat).forEach((p,i)=>{p.record.summary=`事件與結果：第${i}段的事`;p.record.title='標題'+i;});
+    r.host.memory=()=>({recentPages:2});r.host.complete=async()=>'{"ids":["p5"],"reasons":{"p5":"相關"}}';
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,20000,()=>assert.fail('abort'),'normal');
+    const shape=core.map(m=>m.extra?.folio_summary?`digest:${[...m.mes.matchAll(/第 (\d+) 頁/g)].map(x=>x[1]).join(',')}`:m.extra?.folio_note?'note':m.send_date);
+    assert.deepEqual(shape,['digest:1,2','t4','t5','digest:4,5,6','t12','t13','t14','t15','note','t16']);
+    assert.match(core[0].mes,/^\[前情摘要：/);assert.match(core[3].mes,/^\[前情摘要（續）/);
+    assert.deepEqual(r.engine.last.summary.pages,[1,2,4,5,6]);assert.equal(r.engine.last.summary.parts.length,2);
+    r.engine.captureFinal({type:'normal',messages:[{role:'user',content:core.map(m=>m.mes).join('\n\n')}]});assert.equal(r.engine.last.summary.final,true);
+});
