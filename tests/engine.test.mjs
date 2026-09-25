@@ -16,7 +16,7 @@ class MemoryCache {
     async lease(k,o,release=false){if(release){if(this.owner===o)this.owner=null;return false;}if(this.owner&&this.owner!==o)return false;this.owner=o;return true;}
     close(){}
 }
-const story=chat=>chat.filter(m=>!m.extra?.folio_note);
+const story=chat=>chat.filter(m=>!m.extra?.folio_note&&!m.extra?.folio_summary);
 function message(text,i=0,user=false){return {mes:text,name:user?'玩家':'角色',is_user:user,send_date:`t${i}`,extra:{}};}
 function ready(r){for(const p of bookPages(r.c.chat)){const x=newRecord(p.message,p.playerInput);x.summary=p.body;x.done=true;p.message.extra[KEY]=x;r.engine.vectors.set(r.engine.vectorKey(x),[[1,0]]);}}
 function rig(messages=[message('港口的兩人交換信物，約定明日再見。')]) {
@@ -284,7 +284,8 @@ test('hidden recall not selected stays out; hidden background of a recent page r
     const r=rig([message('舊信件',0),message('隱藏玩家背景',1,true),message('最近角色回應',2)]);
     r.c.chat[0].is_system=true;r.c.chat[1].is_system=true;ready(r);r.host.memory=()=>({recentPages:1});r.host.complete=async()=>'{"ids":[]}';
     const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system));await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
-    assert.deepEqual(outgoing.map(m=>m.send_date),['t1','t2']);
+    assert.deepEqual(story(outgoing).map(m=>m.send_date),['t1','t2']);
+    assert.equal(outgoing[0].extra.folio_summary,true);assert.match(outgoing[0].mes,/第 1 頁.*：舊信件/,'unsent hidden page reaches the model as its summary');assert.ok(!outgoing.some(m=>m.mes==='舊信件'));
 });
 
 test('an unfinished old page is kept verbatim while finished pages are still searched',async()=>{
@@ -292,7 +293,8 @@ test('an unfinished old page is kept verbatim while finished pages are still sea
     r.host.complete=async()=>'{"ids":[]}';const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system)),before=JSON.stringify(outgoing);
     await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
     assert.equal(r.engine.last.mode,'hybrid');assert.equal(r.engine.last.unready,1);assert.equal(r.engine.last.candidates.length,1);assert.match(r.engine.warning,/1 頁舊正文尚未整理/);
-    assert.equal(JSON.stringify(outgoing),before,'unselected hidden page stays out; unfinished page is not reformatted or dropped');
+    assert.equal(JSON.stringify(story(outgoing)),before,'unselected hidden body stays out; unfinished page is not reformatted or dropped');
+    assert.match(outgoing[0].mes,/已整理隱藏正文/);assert.deepEqual(r.engine.last.summary.pages,[1]);
 });
 
 test('hidden unfinished, tool/media, removed swipe and typed notices cannot be recalled',async()=>{
@@ -590,7 +592,7 @@ test('selection injects original bodies chronologically into coreChat only',asyn
     const r=rig(source);ready(r);
     r.host.complete=async()=>'{"ids":["p1","fake"]}';const before=JSON.stringify(source);const core=structuredClone(source);
     await r.engine.intercept(core,2000,()=>assert.fail('unexpected abort'),'normal');
-    assert.equal(JSON.stringify(source),before);assert.ok(core.some(m=>m.mes===source[1].mes));assert.ok(core.length<source.length);
+    assert.equal(JSON.stringify(source),before);assert.ok(core.some(m=>m.mes===source[1].mes));assert.ok(story(core).length<source.length);
     assert.equal(core.at(-1).mes,source.at(-1).mes);assert.ok(story(core).every(m=>source.some(s=>s.mes===m.mes)));
     assert.deepEqual(story(core).map(m=>m.send_date),[...story(core)].sort((a,b)=>Number(a.send_date.slice(1))-Number(b.send_date.slice(1))).map(m=>m.send_date));
 });
@@ -989,5 +991,25 @@ test('history squashed into one user message with an assistant prefill is still 
     const wrapped=core.map((m,i)=>m.is_user?`<dream_instruction id='uid_${i+1}'>\n${m.mes}\n</dream_instruction>`:`<dream_plot id='uid_${i+1}'>\n${m.mes}\n</dream_plot>`).join('\n\n');
     r.engine.captureFinal({type:'normal',messages:[{role:'system',content:'預設'},{role:'user',content:wrapped},{role:'assistant',content:'<dream_plot>'}]});
     assert.equal(r.engine.last.final.dropped,0);assert.ok(r.engine.last.items.filter(x=>x.role==='assistant').every(x=>x.final===true));
+    r.engine.captureFinal({type:'normal',messages:[]});
+});
+
+test('pages not sent in full reach the model as a chronological digest that degrades oldest first',async()=>{
+    const source=[];for(let i=0;i<8;i++){source.push(message('玩家'+i,2*i,true),message(`第${i}段正文`+'。'.repeat(300),2*i+1));}source.push(message('現在怎麼辦？',16,true));
+    const r=rig(source);ready(r);bookPages(r.c.chat).forEach((p,i)=>{p.record.summary=`事件與結果：第${i}段的事\n關係與狀態：狀態${i}`;p.record.title='標題'+i;});
+    r.host.memory=()=>({recentPages:2});r.host.complete=async()=>'{"ids":["p11"],"reasons":{"p11":"相關"}}';
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,20000,()=>assert.fail('abort'),'normal');
+    const digest=core[0];assert.equal(digest.extra.folio_summary,true);assert.equal(digest.extra.type,'narrator');
+    assert.deepEqual(r.engine.last.summary.pages,[1,2,3,4,5],'recalled page 6 and recent pages 7-8 are not repeated');
+    assert.match(digest.mes,/第 1 頁〈標題0〉：事件與結果：第0段的事；關係與狀態：狀態0/);assert.ok(digest.mes.indexOf('第 1 頁')<digest.mes.indexOf('第 5 頁'));
+    assert.ok(!digest.mes.includes('第5段的事'),'the recalled page is sent as body, not summary');
+    const pages=[...r.engine.last.summary.pages];
+    // A tight budget turns the oldest entries into titles, then omits them with a count.
+    r.host.memory=()=>({recentPages:2,historyBudget:500});r.host.complete=async()=>'{"ids":[]}';
+    const tight=structuredClone(r.c.chat);await r.engine.intercept(tight,20000,()=>assert.fail('abort'),'normal');const s=r.engine.last.summary;
+    assert.ok(s.titleOnly.length>0||s.omitted>0);if(s.titleOnly.length)assert.equal(s.titleOnly[0],s.pages[0],'oldest degrade first');
+    assert.ok(s.tokens<=500);if(s.omitted)assert.match(tight[0].mes,/更早 \d+ 頁因容量省略/);
+    r.host.memory=()=>({recentPages:2,summaryBlock:false});const off=structuredClone(r.c.chat);await r.engine.intercept(off,20000,()=>assert.fail('abort'),'normal');
+    assert.ok(!off.some(m=>m.extra?.folio_summary));assert.equal(r.engine.last.summary,undefined);assert.ok(pages.length);
     r.engine.captureFinal({type:'normal',messages:[]});
 });

@@ -1,5 +1,5 @@
 import { KEY, MODEL, bookPages, isStoryMessage, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
-    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM, RECALL_NOTE_NAME, recallNote,
+    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM, RECALL_NOTE_NAME, recallNote, DIGEST_HEADER, digestLine, estimatedTokens,
     SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS } from './core.js';
 import { uid } from './host.js';
 import { mergeUsage, usageView, bindResponse } from './usage.js';
@@ -517,6 +517,19 @@ export class Engine {
         }
         return null;
     }
+    // Oldest pages give way first: full entry, then title only, then omitted.
+    async digest(pages,room,active) {
+        if(!pages.length||room<=0)return null;
+        pages=[...pages].sort((a,b)=>a.index-b.index);
+        const [head,...costs]=await Promise.all([this.host.count(DIGEST_HEADER),...pages.flatMap(p=>[this.host.count(digestLine(p)),this.host.count(digestLine(p,false))])]);active();
+        const mode=pages.map(()=>'full');let total=head+pages.reduce((n,_,i)=>n+costs[2*i],0),omitted=0;
+        for(let i=0;i<pages.length&&total>room;i++){total-=costs[2*i]-costs[2*i+1];mode[i]='title';}
+        while(omitted<pages.length&&total>room){total-=costs[2*omitted+1];mode[omitted]='omit';omitted++;}
+        if(omitted===pages.length)return null;
+        const lines=pages.flatMap((p,i)=>mode[i]==='omit'?[]:[digestLine(p,mode[i]==='full')]);
+        const body=[DIGEST_HEADER,...(omitted?[`（更早 ${omitted} 頁因容量省略）`]:[]),...lines].join('\n');
+        return {body,tokens:total,pages:pages.filter((_,i)=>mode[i]!=='omit').map(p=>p.number),titleOnly:pages.filter((_,i)=>mode[i]==='title').map(p=>p.number),omitted};
+    }
     async intercept(chat,contextSize,abort,type,options={}) {
         if(this.conflict||this.host.context().mainApi!=='openai'||!this.host.settings().enabled||['quiet','impersonate'].includes(type)||!chat.length)return;
         if(chat.some(m=>m.extra?.tool_invocations?.length||m.extra?.media?.length)){
@@ -607,10 +620,12 @@ export class Engine {
                     }catch(e){active();trace.mode='fallback';warning=e.name==='FolioContextError'?`${e.message}；這次暫用目錄匹配`:'選頁助手暫不可用，這次使用最相關的目錄匹配';ids=candidates.filter(p=>p.lexical>0||p.semantic>.5).slice(0,3).map(p=>p.id);}
                 }
                 ids=ids.slice(0,recallLimit);
+                // Keep room for the digest of pages that will not be sent in full.
+                const reserve=memory.summaryBlock===false?0:Math.min(Math.floor(budget.history*.25),pool.reduce((n,p)=>n+estimatedTokens(digestLine(p)),0));
                 trace.candidates=candidates.map(p=>({id:p.id,index:p.index,number:p.number,title:p.title,summary:p.summary,semantic:p.semantic,lexical:p.lexical,selected:ids.includes(p.id)||p.pinned,reason:p.pinned?'已釘選':selectedReasons[p.id]??(ids.includes(p.id)?'匹配備援':'助手未選用')}));
                 for(const p of [...pool.filter(p=>p.pinned),...ids.map(id=>candidates.find(p=>p.id===id)).filter(Boolean)]){
                     if(chosen.has(p.i))continue;
-                    const positions=[...p.userIndices,p.i].filter(i=>!chosen.has(i)),cost=positions.reduce((n,i)=>n+costs[i],0),limit=Math.max(budget.history,recent.used);
+                    const positions=[...p.userIndices,p.i].filter(i=>!chosen.has(i)),cost=positions.reduce((n,i)=>n+costs[i],0),limit=Math.max(budget.history-reserve,recent.used);
                     if(used+cost>limit){
                         const available=limit-used,userPositions=positions.filter(i=>i!==p.i),userCost=userPositions.reduce((n,i)=>n+costs[i],0);
                         let keptUsers=false,fit=null;
@@ -639,6 +654,11 @@ export class Engine {
                 const at=result.findLastIndex(m=>m.is_user);
                 result.splice(at<0?Math.max(0,result.length-1):at,0,{name:RECALL_NOTE_NAME,is_user:false,is_system:false,send_date:'folio-recall',mes:note.body,extra:{type:'narrator',folio_note:true}});
                 used+=note.tokens;trace.note={body:note.body,pages:note.pages,tokens:note.tokens,final:null};
+            }
+            const digest=memory.summaryBlock===false||trace.mode==='building'?null:await this.digest(pool.filter(p=>!chosen.has(p.i)),Math.max(budget.history,recent.used)-used,active);
+            if(digest){
+                result.unshift({name:RECALL_NOTE_NAME,is_user:false,is_system:false,send_date:'folio-digest',mes:digest.body,extra:{type:'narrator',folio_summary:true}});
+                used+=digest.tokens;trace.summary={body:digest.body,pages:digest.pages,titleOnly:digest.titleOnly,omitted:digest.omitted,tokens:digest.tokens,final:null};
             }
             Object.assign(trace,{tokens:used,model:trace.candidates.length?(this.host.models?.selection??this.host.model):'',stage:options.preview?'preview':'awaiting-final'});
             if(!options.preview){chat.splice(0,chat.length,...result);this.awaitingFinal=true;this.generationGuard={identity,stamps};}
@@ -687,7 +707,7 @@ export class Engine {
                 if(item.final)break;
             }
         }
-        if(this.last.note){const needle=normalize(this.last.note.body);this.last.note.final=!!needle&&messages.some(m=>m.text.includes(needle));}
+        for(const block of [this.last.note,this.last.summary])if(block){const needle=normalize(block.body);block.final=!!needle&&messages.some(m=>m.text.includes(needle));}
         this.last.stage='observed';this.last.final={observedAt:Math.max(Date.now(),(this.usages[0]?.final?.observedAt??0)+1),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
         this.pendingUsage={identity:this.host.identity(),id:this.last.id,stamps:[...this.last.stamps],objects:[...(this.host.context().chat??[])],trace:structuredClone(this.last),type:this.last.type??body.type};
         this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；收到角色回覆後保存取用紀錄');

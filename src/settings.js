@@ -1,11 +1,11 @@
 import { SUMMARY_SYSTEM, SELECT_SYSTEM, estimatedTokens } from './core.js';
 
-export const MEMORY_DEFAULTS=Object.freeze({detail:'detailed',focus:'balanced',recentPages:0,recallPages:0,historyBudget:0,recallNote:true});
+export const MEMORY_DEFAULTS=Object.freeze({detail:'detailed',focus:'balanced',recentPages:0,recallPages:0,historyBudget:0,recallNote:true,summaryBlock:true});
 const number=(v,fallback,min,max,integer=false)=>{if(v===''||v==null)return fallback;const n=Number(v);if(!Number.isFinite(n)||n<min||n>max||(integer&&!Number.isInteger(n)))throw new Error(`請輸入 ${min} 至 ${max} ${integer?'之間的整數':'之間的數字'}`);return n;};
 const flag=(v,fallback)=>{if(v===''||v==null)return fallback;if(v===true||v==='true')return true;if(v===false||v==='false')return false;throw new Error('請選擇開啟或關閉');};
 export function memoryOptions(input={}){
     if(!['brief','standard','detailed'].includes(input.detail??'detailed')||!['balanced','plot','relationships'].includes(input.focus??'balanced'))throw new Error('請選擇有效的摘要方式');
-    return {detail:input.detail??'detailed',focus:input.focus??'balanced',recentPages:number(input.recentPages,0,0,20,true),recallPages:number(input.recallPages,0,0,8,true),historyBudget:number(input.historyBudget,0,0,200000,true),recallNote:flag(input.recallNote,true)};
+    return {detail:input.detail??'detailed',focus:input.focus??'balanced',recentPages:number(input.recentPages,0,0,20,true),recallPages:number(input.recallPages,0,0,8,true),historyBudget:number(input.historyBudget,0,0,200000,true),recallNote:flag(input.recallNote,true),summaryBlock:flag(input.summaryBlock,true)};
 }
 export function generationOptions(input={},role='summary'){
     const contextTokens=number(input.contextTokens,0,0,2000000,true),maxTokens=number(input.maxTokens,1200,64,64000,true);

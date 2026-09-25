@@ -236,6 +236,7 @@ export function mountUI(engine){
         nodes.push(el('p','folio-muted',`${dateStamp(last.final.observedAt)}　現存回覆可查看 ${records.length} 次；共保留 ${state.usageStoredCount??records.length} / ${USAGE_LIMIT} 次`));
         if(last.sourceChanged)nodes.push(el('p','folio-usage-warning','聊天已有刪除或變更；以下保留當時發送快照，不代表下一次取用。'));
         nodes.push(disclosure('當時的玩家輸入',last.query||'沒有新的玩家輸入'),heading(`已核對取用：${counts.bodies} 頁正文、${counts.players} 則玩家背景`,'正文為主，玩家背景折疊附在對應正文下。這只是顯示順序；實際請求仍按聊天時間排列。'),el('p','folio-recall-count',`召回舊正文 ${counts.recalled} 頁 · 保留近期正文 ${counts.recent} 頁${counts.retained?` · 原歷史 ${counts.retained} 頁`:''}`));
+        if(last.summary){const s=last.summary,d=disclosure(`前情摘要：${s.pages.length} 頁未送正文的舊頁以目錄補上${s.titleOnly?.length?`（其中 ${s.titleOnly.length} 頁只留標題）`:''}${s.omitted?`，更早 ${s.omitted} 頁因容量省略`:''}${s.final===false?'（最終請求未核對到）':''}`,s.body??'全文只保存在原瀏覽器。','folio-recall-note');d.dataset.key=last.id+':summary';nodes.push(d);}
         if(last.note){const note=disclosure(`書頁回顧：提示模型第 ${last.note.pages.join('、')} 頁與本次輸入相關${last.note.final===false?'（最終請求未核對到）':''}`,last.note.body,'folio-recall-note');note.dataset.key=last.id+':note';nodes.push(note);}
         if(last.unready)nodes.push(el('p','folio-muted',`${last.unready} 頁舊正文當時尚未整理，已原樣保留，未參與查頁。`));
         if(!counts.bodies)nodes.push(el('p','folio-usage-warning','這次未核對到任何完整正文。玩家背景不能算作正文取用；請查看下方未核對紀錄。'));
