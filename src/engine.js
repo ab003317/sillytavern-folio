@@ -665,14 +665,16 @@ export class Engine {
         if(!this.traceValid(this.last)){this.invalidateTrace();this.emit();return;}
         this.awaitingFinal=false;const normalize=s=>String(s??'').replace(/\s+/g,' ').trim();
         const messages=body.messages.map(m=>({role:m.role,text:normalize(Array.isArray(m.content)?m.content.filter(x=>x.type==='text').map(x=>x.text).join('\n'):m.content),used:[]}));
+        const wireCounts=new Map();for(const item of this.last.items)wireCounts.set(item.wireRole??item.role,(wireCounts.get(item.wireRole??item.role)??0)+1);
         for(const item of this.last.items){
             let value=item.body;try{value=this.host.context().substituteParams?.(value)??value;}catch{}
             const needle=normalize(value);item.final=false;
             if(!needle)continue;
-            // Prompt post-processing (single user message, squash) can remove a role
-            // entirely. Only then match across roles: a short input could otherwise
-            // be "found" inside an unrelated body.
-            const role=item.wireRole??item.role,merged=!messages.some(m=>m.role===role);
+            // Post-processing and preset scripts (squash into one user message, then
+            // an assistant prefill) re-home history under another role. Fewer messages
+            // of a role than items of it means merging happened; only then match
+            // across roles, and never for short text that could hit an unrelated body.
+            const role=item.wireRole??item.role,merged=needle.length>=12&&(wireCounts.get(role)??0)>messages.filter(m=>m.role===role).length;
             for(const strict of merged?[true,false]:[true]){
                 for(const m of messages){
                     if(strict&&m.role!==role)continue;

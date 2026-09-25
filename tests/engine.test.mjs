@@ -982,3 +982,12 @@ test('recall note quotes the recalled source text unchanged apart from whitespac
     const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('abort'),'normal');
     assert.match(core.find(m=>m.extra?.folio_note).mes,/The captain signs the ships log at sunset\./);
 });
+
+test('history squashed into one user message with an assistant prefill is still audited as sent',async()=>{
+    const r=rig([message('第一段玩家輸入，說明要去港口。',0,true),message('船長在港口交出藍色信件，約定冬天前送到山城。',1),message('第二段玩家輸入，問信件內容。',2,true),message('旅人拆開信，看見山城城主的封印與一張地圖。',3),message('繼續',4,true)]);ready(r);
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('abort'),'normal');
+    const wrapped=core.map((m,i)=>m.is_user?`<dream_instruction id='uid_${i+1}'>\n${m.mes}\n</dream_instruction>`:`<dream_plot id='uid_${i+1}'>\n${m.mes}\n</dream_plot>`).join('\n\n');
+    r.engine.captureFinal({type:'normal',messages:[{role:'system',content:'預設'},{role:'user',content:wrapped},{role:'assistant',content:'<dream_plot>'}]});
+    assert.equal(r.engine.last.final.dropped,0);assert.ok(r.engine.last.items.filter(x=>x.role==='assistant').every(x=>x.final===true));
+    r.engine.captureFinal({type:'normal',messages:[]});
+});
