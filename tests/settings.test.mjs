@@ -66,7 +66,7 @@ test('advanced output sampling and prompt reach main, direct and profile request
 test('invalid advanced settings cannot replace saved values; reset restores default prompt and summary chunking preserves every character',()=>{
     const {host}=fixture();host.configureAdvanced('summary',{contextTokens:4096,maxTokens:600});const saved=host.advanced('summary');
     assert.throws(()=>host.configureAdvanced('summary',{contextTokens:1000,maxTokens:800}),/上下文/);assert.deepEqual(host.advanced('summary'),saved);
-    assert.throws(()=>generationOptions({temperature:3}));assert.throws(()=>memoryOptions({recallPages:0}));
+    assert.throws(()=>generationOptions({temperature:3}));assert.throws(()=>memoryOptions({recallPages:9}));assert.throws(()=>memoryOptions({recallNote:'maybe'}));assert.equal(memoryOptions({}).recallPages,0);assert.equal(memoryOptions({recallNote:'false'}).recallNote,false);
     const text='連續正文內容。'.repeat(1700),size=host.summaryChunkSize();assert.ok(size<3600);assert.equal(splitBody(text,size).join(''),text);
     host.configureAdvanced('summary',{});assert.equal(host.advanced('summary').prompt,'');assert.match(rolePrompt('summary',{},{}),/目錄編輯/);
 });

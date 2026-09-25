@@ -1,5 +1,5 @@
 import { MEMORY_DEFAULTS, generationOptions } from './settings.js';
-import { SUMMARY_SYSTEM, SELECT_SYSTEM } from './core.js';
+import { SUMMARY_SYSTEM, SELECT_SYSTEM, MODEL_TIERS } from './core.js';
 
 export function fold(el,title,level=2){const d=el('details','folio-settings-fold');d.dataset.level=String(level);d.append(el('summary','',title));return d;}
 function field(el,info,input,label,help){input.setAttribute('aria-label',label);const wrap=el('label','folio-field'),title=el('span','',label);if(help)title.append(info(help));wrap.append(title,input);return wrap;}
@@ -9,12 +9,19 @@ const invalidate=engine=>{engine.cancel();engine.warning='';engine.connectionTes
 
 export function mountMemoryOptions(engine,container,{el,button,info}){
     const section=fold(el,'摘要與取用設定'),advanced=fold(el,'進階容量限制',3),feedback=el('p','folio-api-feedback');feedback.setAttribute('role','status');
-    const inputs={detail:select(el,[['brief','精簡'],['standard','標準'],['detailed','詳細（預設）']]),focus:select(el,[['balanced','事件與人物兼顧'],['plot','劇情、因果與線索'],['relationships','人物關係與承諾']]),recentPages:numeric(el,{min:0,max:20,placeholder:'0：依上下文自動分配'}),recallPages:numeric(el,{min:1,max:8}),historyBudget:numeric(el,{min:0,max:200000,placeholder:'0：自動'})};
-    section.append(el('p','folio-muted','調整摘要寫法、保留近期正文與舊事召回。預設自動分配；改摘要方式只影響接下來的整理，舊頁要按一鍵重新整理才更新。'));
-    for(const [key,label,help] of [['detail','摘要詳略','每段摘要的目標長度：精簡 50–100 字、標準 80–180 字、詳細 180–350 字。'],['focus','摘要重點','只記錄已發生的事件；選項和玩家願望不會被當成事實。'],['recentPages','保留近期正文頁數','0 代表按上下文自動分配；1–20 為最多保留的近期角色回覆頁數，仍受容量限制，至少保留最新回合。'],['recallPages','每次最多召回舊正文','向量匹配與提取模型選回的舊正文上限。釘選頁另外計算，全部仍受容量限制。']])section.append(field(el,info,inputs[key],label,help));
+    const inputs={detail:select(el,[['brief','精簡'],['standard','標準'],['detailed','詳細（預設）']]),focus:select(el,[['balanced','事件與人物兼顧'],['plot','劇情、因果與線索'],['relationships','人物關係與承諾']]),recentPages:numeric(el,{min:0,max:20,placeholder:'0：依模型自動'}),recallPages:numeric(el,{min:0,max:8,placeholder:'0：依模型自動'}),recallNote:select(el,[['true','開啟（預設）'],['false','關閉']]),historyBudget:numeric(el,{min:0,max:200000,placeholder:'0：自動'})};
+    const capacity=el('p','folio-muted folio-capacity'),mismatch=el('p','folio-usage-warning');mismatch.hidden=true;
+    section.append(el('p','folio-muted','調整摘要寫法、保留近期正文與舊事召回。預設按目前模型的實際上下文自動分配；改摘要方式只影響接下來的整理，舊頁要按一鍵重新整理才更新。'),capacity,mismatch);
+    for(const [key,label,help] of [['detail','摘要詳略','每段摘要的目標長度：精簡 50–100 字、標準 80–180 字、詳細 180–350 字。'],['focus','摘要重點','只記錄已發生的事件；選項和玩家願望不會被當成事實。'],['recentPages','保留近期正文頁數','0 代表依模型自動：小上下文按容量保留，長上下文約 4 頁／12k tokens，超長上下文約 6 頁／24k tokens。更早的頁一律經目錄查找。1–20 為自訂上限，至少保留最新回合。'],['recallPages','每次最多召回舊正文','0 代表依模型自動（小 3／長 6／超長 8 頁）。釘選頁另外計算，全部仍受容量限制。'],['recallNote','書頁回顧提示','在最後一則玩家輸入前加入一段簡短提示，列出這次取回的舊正文頁、原因與一小段原文，讓模型知道哪些舊情節與本次相關。只引用原文，不發送摘要。']])section.append(field(el,info,inputs[key],label,help));
     advanced.append(field(el,info,inputs.historyBudget,'歷史正文預算（tokens）','0 使用自動預算。自訂值可進一步限制記憶歷史容量；不覆寫酒館主聊天的總上下文或回覆設定。'));section.append(advanced);
     let dirty=false;for(const input of Object.values(inputs))input.addEventListener('input',()=>{dirty=true;feedback.textContent='尚未保存';});
-    function render(state){if(!dirty)for(const [key,input] of Object.entries(inputs))input.value=String((state.memory??MEMORY_DEFAULTS)[key]);}
+    const sourceLabel={list:'酒館模型列表',known:'已知規格',default:'未能識別，保守估計',host:'沿用酒館設定'};
+    function render(state){
+        if(!dirty)for(const [key,input] of Object.entries(inputs))input.value=String((state.memory??MEMORY_DEFAULTS)[key]??MEMORY_DEFAULTS[key]);
+        const c=state.capacity,n=v=>Number(v).toLocaleString();capacity.hidden=!c;mismatch.hidden=true;if(!c)return;
+        capacity.textContent=`目前模型 ${c.model||'未選擇'}：${c.context?`實際上下文 ${n(c.context)}（${sourceLabel[c.source]??c.source}）`:'上下文沿用酒館設定'}。書頁按 ${n(c.capacity)} 可用輸入計算（${MODEL_TIERS[c.tier]?.label??c.tier}）：歷史目標 ${n(c.history)} tokens，近期正文最多 ${Number.isFinite(c.recent)?n(c.recent):'—'} tokens${c.recentPages?`／${c.recentPages} 頁`:''}，其餘舊頁經目錄查找，每次最多召回 ${c.recallPages} 頁。`;
+        if(c.context&&c.hostContext>c.context){mismatch.hidden=false;mismatch.textContent=`酒館的上下文設定 ${n(c.hostContext)} 大於這個模型的實際上限 ${n(c.context)}。書頁已按模型上限計算；建議在酒館關閉「解鎖上下文」或把上下文調到 ${n(c.context)} 以下，避免主請求超出模型上限。`;}
+    }
     const actions=el('div','folio-toolbar');actions.append(button('保存摘要與取用設定',()=>{try{engine.host.configureMemory(Object.fromEntries(Object.entries(inputs).map(([key,input])=>[key,input.value])));dirty=false;invalidate(engine);feedback.textContent='已保存；舊聊天仍需手動整理。';render(engine.snapshot());}catch(e){feedback.textContent=e.message;}},'folio-primary'),button('恢復預設',()=>{engine.host.configureMemory(MEMORY_DEFAULTS);dirty=false;invalidate(engine);render(engine.snapshot());feedback.textContent='已恢復預設；未啟動整理。';}));
     section.append(actions,feedback);container.append(section);render(engine.snapshot());return {render};
 }

@@ -16,6 +16,7 @@ class MemoryCache {
     async lease(k,o,release=false){if(release){if(this.owner===o)this.owner=null;return false;}if(this.owner&&this.owner!==o)return false;this.owner=o;return true;}
     close(){}
 }
+const story=chat=>chat.filter(m=>!m.extra?.folio_note);
 function message(text,i=0,user=false){return {mes:text,name:user?'玩家':'角色',is_user:user,send_date:`t${i}`,extra:{}};}
 function ready(r){for(const p of bookPages(r.c.chat)){const x=newRecord(p.message,p.playerInput);x.summary=p.body;x.done=true;p.message.extra[KEY]=x;r.engine.vectors.set(r.engine.vectorKey(x),[[1,0]]);}}
 function rig(messages=[message('港口的兩人交換信物，約定明日再見。')]) {
@@ -34,7 +35,7 @@ test('memory preferences limit recalled pages and history while preserving the l
     r.host.memory=()=>({recentPages:1,recallPages:1,historyBudget:40});
     r.host.complete=async()=>'{"ids":["p1","p3","p5"]}';
     const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('abort'),'normal');
-    assert.deepEqual(core.map(m=>m.send_date),['t0','t1','t8','t9']);
+    assert.deepEqual(story(core).map(m=>m.send_date),['t0','t1','t8','t9']);assert.equal(core.findIndex(m=>m.extra?.folio_note),core.findIndex(m=>m.send_date==='t8')-1);
     assert.equal(r.engine.last.budget,40);assert.equal(r.engine.last.candidates.filter(p=>p.selected).length,1);
     r.host.complete=async()=>{const error=new Error('助手輸入超過進階設定的上下文上限');error.name='FolioContextError';throw error;};
     await r.engine.intercept(structuredClone(r.c.chat),10000,()=>assert.fail('abort'),'normal');
@@ -273,7 +274,7 @@ test('hidden recall enters filtered outgoing history exactly once with its playe
     r.c.chat[0].is_system=true;r.c.chat[1].is_system=true;ready(r);r.host.memory=()=>({recentPages:1,historyBudget:2000});
     r.host.complete=async()=>'{"ids":["p1","p1"]}';const before=JSON.stringify(r.c.chat);
     const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system));await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
-    assert.deepEqual(outgoing.map(m=>m.send_date),['t0','t1','t2','t3','t4']);assert.equal(outgoing[1].is_system,false);
+    assert.deepEqual(story(outgoing).map(m=>m.send_date),['t0','t1','t2','t3','t4']);assert.equal(outgoing[1].is_system,false);
     assert.equal(JSON.stringify(r.c.chat),before);assert.equal(r.engine.last.items.filter(i=>i.index===1).length,1);
     r.c.chat.splice(0,2);r.engine.changed({deleted:true});const next=structuredClone(r.c.chat);await r.engine.intercept(next,10000,()=>assert.fail('abort'),'normal');
     assert.ok(!next.some(m=>m.mes==='信件交給船長'));
@@ -286,10 +287,12 @@ test('hidden recall not selected stays out; hidden background of a recent page r
     assert.deepEqual(outgoing.map(m=>m.send_date),['t1','t2']);
 });
 
-test('incomplete catalogue fallback preserves original outgoing history without reviving hidden text',async()=>{
-    const r=rig([message('已整理隱藏正文',0),message('未整理舊正文',1),message('最近正文',2)]);ready(r);r.c.chat[0].is_system=true;delete r.c.chat[1].extra[KEY];r.host.memory=()=>({recentPages:1});
-    const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system)),before=JSON.stringify(outgoing);
-    await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');assert.equal(r.engine.last.mode,'building');assert.equal(JSON.stringify(outgoing),before);
+test('an unfinished old page is kept verbatim while finished pages are still searched',async()=>{
+    const r=rig([message('已整理隱藏正文',0),message('<状态栏>未整理</状态栏>未整理舊正文',1),message('最近正文',2)]);ready(r);r.c.chat[0].is_system=true;delete r.c.chat[1].extra[KEY];r.host.memory=()=>({recentPages:1});
+    r.host.complete=async()=>'{"ids":[]}';const outgoing=structuredClone(r.c.chat.filter(m=>!m.is_system)),before=JSON.stringify(outgoing);
+    await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
+    assert.equal(r.engine.last.mode,'hybrid');assert.equal(r.engine.last.unready,1);assert.equal(r.engine.last.candidates.length,1);assert.match(r.engine.warning,/1 頁舊正文尚未整理/);
+    assert.equal(JSON.stringify(outgoing),before,'unselected hidden page stays out; unfinished page is not reformatted or dropped');
 });
 
 test('hidden unfinished, tool/media, removed swipe and typed notices cannot be recalled',async()=>{
@@ -588,8 +591,30 @@ test('selection injects original bodies chronologically into coreChat only',asyn
     r.host.complete=async()=>'{"ids":["p1","fake"]}';const before=JSON.stringify(source);const core=structuredClone(source);
     await r.engine.intercept(core,2000,()=>assert.fail('unexpected abort'),'normal');
     assert.equal(JSON.stringify(source),before);assert.ok(core.some(m=>m.mes===source[1].mes));assert.ok(core.length<source.length);
-    assert.equal(core.at(-1).mes,source.at(-1).mes);assert.ok(core.every(m=>source.some(s=>s.mes===m.mes)));
-    assert.deepEqual(core.map(m=>m.send_date),[...core].sort((a,b)=>Number(a.send_date.slice(1))-Number(b.send_date.slice(1))).map(m=>m.send_date));
+    assert.equal(core.at(-1).mes,source.at(-1).mes);assert.ok(story(core).every(m=>source.some(s=>s.mes===m.mes)));
+    assert.deepEqual(story(core).map(m=>m.send_date),[...story(core)].sort((a,b)=>Number(a.send_date.slice(1))-Number(b.send_date.slice(1))).map(m=>m.send_date));
+});
+test('long-context models keep a fixed recent window, so older pages are really recalled and pointed out',async()=>{
+    const pages=Array.from({length:6},(_,i)=>message(i%2?(i===1?'船長把藍色信件交給旅人，約定冬天前送到山城。':'街市的日常。')+'情節。'.repeat(2500):'玩家背景'+i,i,i%2===0));
+    const r=rig([...pages,message('那封信後來怎樣？',6,true)]);ready(r);
+    r.host.modelLimits=async()=>({model:'deepseek/deepseek-v3.2',context:163840,source:'list',hostContext:2000000,reply:30000,unlocked:true});
+    let request;r.host.complete=async(_s,p)=>{request=JSON.parse(p);return '{"ids":["p1"],"reasons":{"p1":"信件約定"}}';};
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,1970000,()=>assert.fail('abort'),'normal');
+    const last=r.engine.last;assert.equal(last.limits.capacity,133840);assert.equal(last.limits.tier,'standard');assert.equal(last.budget,64000);
+    assert.ok(request.catalogue.length>0,'older pages go through the catalogue on a 2M-slider setting');
+    assert.ok(story(core).some(m=>m.send_date==='t1'));assert.ok(!story(core).some(m=>m.send_date==='t3'),'unselected older page is not sent');
+    const note=core.find(m=>m.extra?.folio_note);assert.equal(core.indexOf(note),core.length-2);assert.equal(note.extra.type,'narrator');assert.match(note.mes,/第 1 頁/);assert.match(note.mes,/信件約定/);
+    assert.deepEqual(last.note.pages,[1]);
+    r.engine.captureFinal({type:'normal',messages:[{role:'user',content:core.map(m=>m.mes).join('\n\n')}]});
+    assert.equal(last.note.final,true);assert.equal(last.final.dropped,0,'merged roles are not reported as dropped');
+    r.host.memory=()=>({recallNote:false});const off=structuredClone(r.c.chat);await r.engine.intercept(off,1970000,()=>assert.fail('abort'),'normal');
+    assert.ok(!off.some(m=>m.extra?.folio_note));assert.equal(r.engine.last.note,undefined);
+});
+test('short player input borrows the latest scene when ranking catalogue pages',async()=>{
+    const r=rig([message('背景',0,true),message('港口船長交出藍色信件。',1),message('背景',2,true),message('夜市小吃。',3),message('背景',4,true),message('他握著藍色信件猶豫。',5),message('繼續',6,true)]);ready(r);
+    r.engine.embedder.embed=async()=>{throw Error('wasm');};r.host.memory=()=>({recentPages:1});let request;r.host.complete=async(_s,p)=>{request=JSON.parse(p);return '{"ids":[]}';};
+    await r.engine.intercept(structuredClone(r.c.chat),10000,()=>assert.fail('abort'),'normal');
+    assert.equal(request.catalogue[0].id,'p1');assert.equal(r.engine.last.query,'繼續');
 });
 test('valid empty selection keeps recent conversation only, no forced hallucinated memories',async()=>{
     const r=rig(Array.from({length:10},(_,i)=>message('前文的情節。'.repeat(50),i,i%2===0)));r.c.chat.at(-1).mes='繼續';r.c.chat.at(-1).is_user=true;
@@ -674,7 +699,7 @@ test('recalled bodies come from the valid catalogue source even when prompt rege
         const r=rig([message('前面的玩家背景',0,true),message('<story>舊頁完整正文不能丟失。</story><state_bar>狀態</state_bar>',1),message('最近玩家背景',2,true),message('近期完整正文。',3),message('詢問舊頁',4,true)]);ready(r);
         const before=JSON.stringify(r.c.chat);r.host.memory=()=>({recentPages:1});r.host.complete=async()=>'{"ids":["p1"]}';
         const outgoing=r.c.chat.map(m=>({...m,mes:m.is_user?m.mes:replacement}));await r.engine.intercept(outgoing,10000,()=>assert.fail('abort'),'normal');
-        assert.deepEqual(outgoing.map(m=>m.mes),['前面的玩家背景','舊頁完整正文不能丟失。','最近玩家背景','近期完整正文。','詢問舊頁']);
+        assert.deepEqual(story(outgoing).map(m=>m.mes),['前面的玩家背景','舊頁完整正文不能丟失。','最近玩家背景','近期完整正文。','詢問舊頁']);
         r.engine.captureFinal({type:'normal',messages:outgoing.map(m=>({role:m.is_user?'user':'assistant',content:m.mes}))});
         assert.equal(r.engine.last.items.filter(x=>x.role==='assistant'&&x.final).length,2);
         assert.equal(r.engine.last.items.find(x=>x.index===0).pageIndex,1);assert.equal(r.engine.last.items.find(x=>x.index===2).pageIndex,3);
@@ -940,4 +965,20 @@ test('legacy exact binding upgrades to a persistent reply ID; already missing ol
     const reopened=new Engine(r.host,r.cache,r.embedder);reopened.schedule=()=>{};reopened.changed();await settle();await reopened.usageWrite;
     assert.ok(reopened.snapshot().usages[0].result.messageId);assert.equal(reopened.snapshot().usageArchive[0].id,'missing-old');
     r.c.chat.at(-1).mes+=' changed';reopened.changed();assert.equal(reopened.snapshot().usages[0].id,first.id);
+});
+
+test('settings view reports the model window and flags an unlocked host slider',async()=>{
+    const r=rig();r.c.chatCompletionSettings={openai_max_context:2000000,openai_max_tokens:30000};
+    r.host.modelLimits=async()=>({model:'deepseek/deepseek-v3.2',context:163840,source:'list',hostContext:2000000,reply:30000,unlocked:true});
+    r.engine.refreshLimits();await new Promise(resolve=>setTimeout(resolve,0));
+    const c=r.engine.snapshot().capacity;assert.equal(c.capacity,133840);assert.equal(c.recent,12000);assert.equal(c.recentPages,4);assert.equal(c.recallPages,6);assert.ok(c.hostContext>c.context);
+    r.host.memory=()=>({recentPages:2,recallPages:8,historyBudget:20000});const custom=r.engine.snapshot().capacity;
+    assert.equal(custom.history,20000);assert.equal(custom.recentPages,2);assert.equal(custom.recallPages,8);
+});
+
+test('recall note quotes the recalled source text unchanged apart from whitespace',async()=>{
+    const r=rig([message('背景',0,true),message('The captain signs   the ships\nlog at sunset.',1),message('背景',2,true),message('Later scene.',3),message('What did the captain sign?',4,true)]);ready(r);
+    r.host.memory=()=>({recentPages:1});r.host.complete=async()=>'{"ids":["p1"],"reasons":{"p1":"captain signs"}}';
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,10000,()=>assert.fail('abort'),'normal');
+    assert.match(core.find(m=>m.extra?.folio_note).mes,/The captain signs the ships log at sunset\./);
 });

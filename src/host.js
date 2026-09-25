@@ -1,4 +1,4 @@
-import { estimatedTokens, SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS } from './core.js';
+import { estimatedTokens, SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS, listedContext, knownContext, UNKNOWN_MODEL_CONTEXT } from './core.js';
 import { PROVIDERS, directConfig, providerRequest, modelIds, apiError } from './providers.js';
 import { memoryOptions, generationOptions, rolePrompt, checkContext } from './settings.js';
 import {mergeUsage,USAGE_KEY} from './usage.js';
@@ -198,6 +198,16 @@ export class Host {
         if(profile)return [...new Set([profile.model,helper.model].filter(Boolean))];
         const api=await this.api();
         return [...new Set([api.getChatCompletionModel(this.context().chatCompletionSettings),...(api.model_list??[]).map(x=>x.id)].filter(Boolean))];
+    }
+    async modelLimits() {
+        const o=this.context().chatCompletionSettings??{};let model='',list=[];
+        try{const api=await this.api();model=api.getChatCompletionModel?.(o)??'';list=Array.isArray(api.model_list)?api.model_list:[];}catch{}
+        model||=String(o[`${o.chat_completion_source}_model`]??'');
+        const entry=model?list.find(x=>x?.id===model)??list.find(x=>x?.name===model):null,listed=listedContext(entry),known=listed?0:knownContext(model);
+        const hostContext=Number(o.openai_max_context)||0,unlocked=!!o.max_context_unlocked;
+        // An unlocked or oversized slider is not evidence of a larger model window.
+        const fallback=!listed&&!known&&(unlocked||hostContext>UNKNOWN_MODEL_CONTEXT)?UNKNOWN_MODEL_CONTEXT:0;
+        return {model,context:listed||known||fallback,source:listed?'list':known?'known':fallback?'default':'host',hostContext,reply:Number(o.openai_max_tokens)||0,unlocked};
     }
     identity() {
         const c = this.context();

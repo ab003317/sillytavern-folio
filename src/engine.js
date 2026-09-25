@@ -1,5 +1,5 @@
 import { KEY, MODEL, bookPages, isStoryMessage, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
-    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM,
+    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM, RECALL_NOTE_NAME, recallNote,
     SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS } from './core.js';
 import { uid } from './host.js';
 import { mergeUsage, usageView, bindResponse } from './usage.js';
@@ -10,6 +10,13 @@ function bodyWindow(text,query,limit){
     const lower=text.toLowerCase();let at=needles.map(x=>lower.indexOf(x)).find(x=>x>=0);if(at==null)at=Math.floor(text.length/2);
     const start=Math.max(0,Math.min(text.length-limit,at-Math.floor(limit*.4))),end=Math.min(text.length,start+limit);
     return `${start?'…':''}${text.slice(start,end)}${end<text.length?'…':''}`;
+}
+
+// One place for the user's overrides on top of the model-derived budget.
+export function memoryBudget(contextSize,limits,memory={}){
+    const budget=budgetFor(contextSize,limits);
+    if(memory.historyBudget){budget.history=Math.min(budget.history,memory.historyBudget);budget.recent=Math.min(budget.recent,Math.floor(budget.history*.6));budget.recall=budget.history-budget.recent;}
+    return {...budget,recentPages:memory.recentPages||budget.recentPages,recallPages:memory.recallPages||budget.recallPages};
 }
 
 export class Engine {
@@ -156,9 +163,17 @@ export class Engine {
             resetting:this.resetting,leaseWaiting:this.leaseWaiting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
             usages:usageRecords,usageArchive:usageViews.filter(x=>x.resultState!=='present'),usageLoading:this.usageLoading,usageStoredCount:this.usageIdentity===this.host.identity()?this.usages.length:0,usageError:this.usageError,
             apiMode:this.host.settings().apiMode??'main',apiSaving:!!this.host.apiSaveTask,mainModel:this.host.helper?.('summary')?.model??'',activeHelpers:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.helperStatus?.(role)])),memory:this.host.memory?.(),advanced:Object.fromEntries(['summary','selection'].map(role=>[role,this.host.advanced?.(role)])),
-            profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model}))};
+            profiles:(this.host.profiles?.()??[]).map(p=>({id:p.id,name:p.name,model:p.model})),capacity:this.capacityView()};
     }
     emit() { this.notify(this.snapshot()); }
+    refreshLimits() {
+        Promise.resolve(this.host.modelLimits?.()).then(limits=>{if(!this.disposed&&limits){this.limits=limits;this.emit();}}).catch(()=>{});
+    }
+    capacityView() {
+        if(!this.limits)return null;const o=this.host.context().chatCompletionSettings??{};
+        const budget=memoryBudget(Math.max(1024,(Number(o.openai_max_context)||8192)-(Number(o.openai_max_tokens)||0)),this.limits,this.host.memory?.()??{});
+        return {...this.limits,capacity:budget.capacity,tier:budget.tier,history:budget.history,recent:budget.recent,recentPages:budget.recentPages,recallPages:budget.recallPages};
+    }
     log(message) { this.activity.unshift({time:Date.now(),message}); this.activity.length=Math.min(50,this.activity.length); }
     setStatus(text) { this.status=this.conflict?'Anima 仍啟用；書頁暫停，避免重複處理歷史':text; this.emit(); }
     schedule(ms=1800) { clearTimeout(this.timer); if(!this.disposed)this.timer=setTimeout(()=>{this.tick().catch(()=>{});},ms); }
@@ -181,7 +196,7 @@ export class Engine {
         }
         const livePages=new Set(this.pages().map(p=>p.message));for(const set of [this.autoPages,this.indexPages])for(const message of set)if(!livePages.has(message))set.delete(message);this.seenPages=livePages;
         this.observedStamps=stamps;
-        this.loadVectors();
+        this.loadVectors();this.refreshLimits();
         this.setStatus(identity?'已就緒；舊聊天只在一鍵重新整理時處理':'等待開啟聊天');this.schedule();
     }
     newResponse({replacement=false,messageId,type}={}) {
@@ -489,6 +504,17 @@ export class Engine {
         }
         return null;
     }
+    async recallNote(recalled,overrides,cleaned,query,room,active) {
+        if(!recalled.length)return null;
+        const pages=recalled.map(({p,reason})=>({number:p.number,title:p.title,reason:String(reason??'目錄選中').replace(/；全文過長，保留相關原文片段$/,''),
+            excerpt:bodyWindow(String(overrides.get(p.i)??cleaned[p.i].mes).replace(/\s+/g,' '),query,160)}));
+        // Excerpts are a courtesy; the pointer alone still tells the model what was recalled.
+        for(const withExcerpt of [true,false]){
+            const body=recallNote(withExcerpt?pages:pages.map(p=>({...p,excerpt:''}))),tokens=await this.host.count(body);active();
+            if(tokens<=room||!withExcerpt&&tokens<=Math.max(room,160))return {body,tokens,pages:pages.map(p=>p.number)};
+        }
+        return null;
+    }
     async intercept(chat,contextSize,abort,type,options={}) {
         if(this.conflict||this.host.context().mainApi!=='openai'||!this.host.settings().enabled||['quiet','impersonate'].includes(type)||!chat.length)return;
         if(chat.some(m=>m.extra?.tool_invocations?.length||m.extra?.media?.length)){
@@ -530,10 +556,11 @@ export class Engine {
             for(const m of cleaned){active();costs.push(await this.host.count(m.mes));}
             active();
             if(original.some(m=>this.sourceIndex(m)<0&&!(options.preview&&m.send_date==='folio-preview')))throw new DOMException('Ambiguous or deleted message','AbortError');
-            const memory=this.host.memory?.()??{},budget=budgetFor(contextSize);
-            if(memory.historyBudget){budget.history=Math.min(budget.history,memory.historyBudget);budget.recent=Math.floor(budget.history*.6);budget.recall=budget.history-budget.recent;}
+            const memory=this.host.memory?.()??{};let limits={};
+            try{limits=await this.host.modelLimits?.()??{};}catch{}
+            active();this.limits=limits;const budget=memoryBudget(contextSize,limits,memory),recentLimit=budget.recentPages,recallLimit=budget.recallPages;
             const incomingPositions=original.map((m,i)=>incomingSet.has(m)?i:-1).filter(i=>i>=0);
-            const recent=recentPages(incomingPositions.map(i=>cleaned[i]),incomingPositions.map(i=>costs[i]),budget.recent,memory.recentPages??0);
+            const recent=recentPages(incomingPositions.map(i=>cleaned[i]),incomingPositions.map(i=>costs[i]),budget.recent,recentLimit);
             recent.picked=new Set([...recent.picked].map(i=>incomingPositions[i]));
             const positionsBySource=new Map(original.map((m,i)=>[this.sourceIndex(m),i]));
             const entries=original.flatMap((m,i)=>{
@@ -542,60 +569,75 @@ export class Engine {
                     title:r?.title||excerpt(source.body,32),summary:r?.summary??'',ready:!!r?.done,pinned:!!r?.pinned,record:r}];
             });
             for(const p of entries)if(recent.picked.has(p.i))for(const i of p.userIndices)if(!recent.picked.has(i)){recent.picked.add(i);recent.used+=costs[i];}
-            const older=entries.filter(p=>!recent.picked.has(p.i));
+            const older=entries.filter(p=>!recent.picked.has(p.i)),unready=older.filter(p=>!p.ready),pool=older.filter(p=>p.ready);
             const query=options.query||cleanBody(original.findLast(m=>m.is_user)?.mes??original.at(-1).mes);
-            const trace={id:uid(),stamps,createdAt:Date.now(),type,receiptVersion:2,preview:!!options.preview,query,mode:'recent',budget:budget.history,beforeTokens:costs.reduce((a,b)=>a+b,0),candidates:[],items:[],skipped:[]};
-            let chosen=new Set(recent.picked),used=recent.used,warning='';const overrides=new Map(),partialInfo=new Map();
+            // "繼續" alone retrieves nothing; the scene just written says what is going on.
+            const lastReply=cleanBody(cleaned.findLast(m=>!m.is_user)?.mes??''),rankQuery=[query,lastReply.slice(-(query.length<40?600:200))].filter(Boolean).join('\n');
+            const trace={id:uid(),stamps,createdAt:Date.now(),type,receiptVersion:2,preview:!!options.preview,query,mode:'recent',budget:budget.history,beforeTokens:costs.reduce((a,b)=>a+b,0),candidates:[],items:[],skipped:[],
+                limits:{model:limits.model??'',context:limits.context??0,source:limits.source??'host',hostContext:limits.hostContext??0,capacity:budget.capacity,tier:budget.tier,recentPages:recentLimit,recallPages:recallLimit}};
+            let chosen=new Set(recent.picked),used=recent.used,warning='';const overrides=new Map(),partialInfo=new Map(),verbatim=new Set(),recalled=[];
             const reasons=new Map([...chosen].map(i=>[i,cleaned[i].is_user?'近期玩家輸入':'近期正文']));
-            if(older.some(p=>!p.ready)){
-                trace.mode='building';warning=`${older.filter(p=>!p.ready).length} 頁舊正文尚未完成摘要；這次保留原歷史，不用正文節錄冒充目錄`;
+            if(unready.length&&!pool.length){
+                trace.mode='building';warning=`${unready.length} 頁舊正文尚未完成摘要；這次保留原歷史，不用正文節錄冒充目錄`;
                 chosen=new Set(incomingPositions);used=incomingPositions.reduce((n,i)=>n+costs[i],0);this.schedule();
-            }else if(older.length){
+            }else if(pool.length){
+                // Pages without a catalogue entry cannot be judged, so they are neither
+                // searched nor dropped: they stay exactly as the host sent them.
+                if(unready.length){
+                    trace.unready=unready.length;warning=`${unready.length} 頁舊正文尚未整理，已原樣保留；只在已整理的 ${pool.length} 頁中查頁`;this.schedule();
+                    for(const p of unready)for(const i of [...p.userIndices,p.i])if(!chosen.has(i)&&incomingSet.has(original[i])){chosen.add(i);verbatim.add(i);used+=costs[i];reasons.set(i,'尚未整理，原樣保留');}
+                }
                 this.setStatus('正在用小摘要查頁；選中後才取回正文');trace.mode='hybrid';
-                for(const p of older){
+                for(const p of pool){
                     p.vectors=this.vectors.get(this.vectorKey(p.record));
                     if(!p.vectors&&this.embedder.cached){p.vectors=await this.embedder.cached(summaryChunks(p.summary));active();if(p.vectors?.length)this.vectors.set(this.vectorKey(p.record),p.vectors);}
                 }
                 let queryVector=null;
-                try{[queryVector]=await this.embedder.embed([excerpt(query,400)],signal,true);}
+                try{[queryVector]=await this.embedder.embed([excerpt(rankQuery,400)],signal,true);}
                 catch(e){active();trace.mode='lexical';warning='向量暫不可用，這次以文字匹配查頁';}
                 active();
-                const candidates=rankCandidates(older,query,queryVector,18);let ids=[],selectedReasons={};
+                const candidates=rankCandidates(pool,rankQuery,queryVector,18);let ids=[],selectedReasons={};
                 if(candidates.length){
                     try{
-                        const raw=await this.host.complete(SELECT_SYSTEM,JSON.stringify({query:excerpt(query,1800),recentContext:excerpt(cleanBody(cleaned.findLast(m=>!m.is_user)?.mes??''),700),
+                        const raw=await this.host.complete(SELECT_SYSTEM,JSON.stringify({query:excerpt(query,1800),recentContext:excerpt(lastReply,700),
                             catalogue:candidates.map(p=>({id:p.id,title:p.title,summary:excerpt(p.summary,900)}))}),{signal,selection:true});
                         active();ids=parseSelection(raw,candidates);selectedReasons=selectionReasons(raw,ids);
                     }catch(e){active();trace.mode='fallback';warning=e.name==='FolioContextError'?`${e.message}；這次暫用目錄匹配`:'選頁助手暫不可用，這次使用最相關的目錄匹配';ids=candidates.filter(p=>p.lexical>0||p.semantic>.5).slice(0,3).map(p=>p.id);}
                 }
-                ids=ids.slice(0,memory.recallPages??8);
+                ids=ids.slice(0,recallLimit);
                 trace.candidates=candidates.map(p=>({id:p.id,index:p.index,number:p.number,title:p.title,summary:p.summary,semantic:p.semantic,lexical:p.lexical,selected:ids.includes(p.id)||p.pinned,reason:p.pinned?'已釘選':selectedReasons[p.id]??(ids.includes(p.id)?'匹配備援':'助手未選用')}));
-                for(const p of [...older.filter(p=>p.pinned),...ids.map(id=>candidates.find(p=>p.id===id)).filter(Boolean)]){
+                for(const p of [...pool.filter(p=>p.pinned),...ids.map(id=>candidates.find(p=>p.id===id)).filter(Boolean)]){
                     if(chosen.has(p.i))continue;
                     const positions=[...p.userIndices,p.i].filter(i=>!chosen.has(i)),cost=positions.reduce((n,i)=>n+costs[i],0),limit=Math.max(budget.history,recent.used);
                     if(used+cost>limit){
                         const available=limit-used,userPositions=positions.filter(i=>i!==p.i),userCost=userPositions.reduce((n,i)=>n+costs[i],0);
                         let keptUsers=false,fit=null;
-                        if(userCost&&available-userCost>=128){fit=await this.relevantBody(p,query,queryVector,available-userCost,signal,active);keptUsers=!!fit;}
-                        if(!fit)fit=await this.relevantBody(p,query,queryVector,available,signal,active);
+                        if(userCost&&available-userCost>=128){fit=await this.relevantBody(p,rankQuery,queryVector,available-userCost,signal,active);keptUsers=!!fit;}
+                        if(!fit)fit=await this.relevantBody(p,rankQuery,queryVector,available,signal,active);
                         if(!fit){trace.skipped.push({index:p.index,number:p.number,tokens:cost,reason:'剩餘容量連一段相關原文也放不下'});continue;}
                         if(keptUsers)for(const i of userPositions){chosen.add(i);reasons.set(i,'所選正文的玩家背景');}
                         chosen.add(p.i);overrides.set(p.i,fit.body);partialInfo.set(p.i,{partial:true,sourceParts:fit.parts,totalSourceParts:fit.totalParts});
                         reasons.set(p.i,p.pinned?'已釘選；全文過長，保留相關原文片段':`${selectedReasons[p.id]??'目錄選中'}；全文過長，保留相關原文片段`);
-                        used+=fit.tokens+(keptUsers?userCost:0);continue;
+                        used+=fit.tokens+(keptUsers?userCost:0);recalled.push({p,reason:reasons.get(p.i)});continue;
                     }
-                    for(const i of positions){chosen.add(i);reasons.set(i,cleaned[i].is_user?'所選正文的玩家背景':p.pinned?'已釘選':selectedReasons[p.id]??'目錄選中');}used+=cost;
+                    for(const i of positions){chosen.add(i);reasons.set(i,cleaned[i].is_user?'所選正文的玩家背景':p.pinned?'已釘選':selectedReasons[p.id]??'目錄選中');}used+=cost;recalled.push({p,reason:reasons.get(p.i)});
                 }
             }
             active();const ordered=[...chosen].sort((a,b)=>a-b);
             // While the catalogue is incomplete, do not change even the source formatting.
-            const result=ordered.map(i=>trace.mode==='building'?original[i]:overrides.has(i)?{...cleaned[i],mes:overrides.get(i)}:cleaned[i]);
+            const result=ordered.map(i=>trace.mode==='building'||verbatim.has(i)?original[i]:overrides.has(i)?{...cleaned[i],mes:overrides.get(i)}:cleaned[i]);
             trace.items=ordered.map((i,j)=>{
                 const page=entries.find(p=>p.i===i),owner=page??entries.find(p=>p.userIndices.includes(i));
                 return {index:this.sourceIndex(original[i]),sourceStamp:stamps[this.sourceIndex(original[i])],number:page?.number,title:page?.title,name:original[i].name,
                     role:original[i].is_user?'user':'assistant',wireRole:original[i].extra?.type==='narrator'?'system':original[i].is_user?'user':'assistant',pageIndex:owner?.index,
                     body:result[j].mes,reason:reasons.get(i)??'目錄整理中，保留原歷史',recent:recent.picked.has(i),...partialInfo.get(i),final:null};
             });
+            const note=memory.recallNote===false?null:await this.recallNote(recalled,overrides,cleaned,rankQuery,Math.max(budget.history,recent.used)-used,active);
+            if(note){
+                const at=result.findLastIndex(m=>m.is_user);
+                result.splice(at<0?Math.max(0,result.length-1):at,0,{name:RECALL_NOTE_NAME,is_user:false,is_system:false,send_date:'folio-recall',mes:note.body,extra:{type:'narrator',folio_note:true}});
+                used+=note.tokens;trace.note={body:note.body,pages:note.pages,tokens:note.tokens,final:null};
+            }
             Object.assign(trace,{tokens:used,model:trace.candidates.length?(this.host.models?.selection??this.host.model):'',stage:options.preview?'preview':'awaiting-final'});
             if(!options.preview){chat.splice(0,chat.length,...result);this.awaitingFinal=true;this.generationGuard={identity,stamps};}
             this.warning=warning;this.log(options.preview?'選頁試跑完成，未生成正文':`已提交 ${trace.items.length} 則歷史，等待酒館最終組裝`);
@@ -627,13 +669,21 @@ export class Engine {
             let value=item.body;try{value=this.host.context().substituteParams?.(value)??value;}catch{}
             const needle=normalize(value);item.final=false;
             if(!needle)continue;
-            for(const m of messages){
-                if(m.role!==(item.wireRole??item.role))continue;
-                let at=m.text.indexOf(needle);
-                while(at>=0&&m.used.some(([a,b])=>at<b&&at+needle.length>a))at=m.text.indexOf(needle,at+1);
-                if(at>=0){m.used.push([at,at+needle.length]);item.final=true;break;}
+            // Prompt post-processing (single user message, squash) can remove a role
+            // entirely. Only then match across roles: a short input could otherwise
+            // be "found" inside an unrelated body.
+            const role=item.wireRole??item.role,merged=!messages.some(m=>m.role===role);
+            for(const strict of merged?[true,false]:[true]){
+                for(const m of messages){
+                    if(strict&&m.role!==role)continue;
+                    let at=m.text.indexOf(needle);
+                    while(at>=0&&m.used.some(([a,b])=>at<b&&at+needle.length>a))at=m.text.indexOf(needle,at+1);
+                    if(at>=0){m.used.push([at,at+needle.length]);item.final=true;break;}
+                }
+                if(item.final)break;
             }
         }
+        if(this.last.note){const needle=normalize(this.last.note.body);this.last.note.final=!!needle&&messages.some(m=>m.text.includes(needle));}
         this.last.stage='observed';this.last.final={observedAt:Math.max(Date.now(),(this.usages[0]?.final?.observedAt??0)+1),messageCount:messages.length,kept:this.last.items.filter(x=>x.final).length,dropped:this.last.items.filter(x=>!x.final).length};
         this.pendingUsage={identity:this.host.identity(),id:this.last.id,stamps:[...this.last.stamps],objects:[...(this.host.context().chat??[])],trace:structuredClone(this.last),type:this.last.type??body.type};
         this.log(`已核對送往後端前的歷史：${this.last.final.kept} 則找到完整內容`);this.rememberTrace(this.last);this.setStatus('本次歷史已核對；收到角色回覆後保存取用紀錄');

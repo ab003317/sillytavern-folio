@@ -236,6 +236,8 @@ export function mountUI(engine){
         nodes.push(el('p','folio-muted',`${dateStamp(last.final.observedAt)}　現存回覆可查看 ${records.length} 次；共保留 ${state.usageStoredCount??records.length} / ${USAGE_LIMIT} 次`));
         if(last.sourceChanged)nodes.push(el('p','folio-usage-warning','聊天已有刪除或變更；以下保留當時發送快照，不代表下一次取用。'));
         nodes.push(disclosure('當時的玩家輸入',last.query||'沒有新的玩家輸入'),heading(`已核對取用：${counts.bodies} 頁正文、${counts.players} 則玩家背景`,'正文為主，玩家背景折疊附在對應正文下。這只是顯示順序；實際請求仍按聊天時間排列。'),el('p','folio-recall-count',`召回舊正文 ${counts.recalled} 頁 · 保留近期正文 ${counts.recent} 頁${counts.retained?` · 原歷史 ${counts.retained} 頁`:''}`));
+        if(last.note){const note=disclosure(`書頁回顧：提示模型第 ${last.note.pages.join('、')} 頁與本次輸入相關${last.note.final===false?'（最終請求未核對到）':''}`,last.note.body,'folio-recall-note');note.dataset.key=last.id+':note';nodes.push(note);}
+        if(last.unready)nodes.push(el('p','folio-muted',`${last.unready} 頁舊正文當時尚未整理，已原樣保留，未參與查頁。`));
         if(!counts.bodies)nodes.push(el('p','folio-usage-warning','這次未核對到任何完整正文。玩家背景不能算作正文取用；請查看下方未核對紀錄。'));
         else if(!counts.recalled&&(last.mode==='building'||last.candidates?.length))nodes.push(el('p','folio-muted',last.mode==='building'?'舊頁摘要尚未齊全，這次保留原歷史，未作目錄召回。':!counts.selected?'提取助手這次沒有選中舊正文。':'已選舊正文，但未確認完整送出；下方列出容量或最終核對結果。'));
         if(counts.skipped)nodes.push(el('p','folio-usage-warning',`${counts.skipped} 頁已選正文超出歷史容量，未放入請求。`));
@@ -260,6 +262,7 @@ export function mountUI(engine){
         if(otherPlayers.length){const d=el('details','folio-other-players');d.dataset.key=last.id+':players';d.append(el('summary','',`其他已發送玩家輸入（${otherPlayers.length} 則）`),el('p','folio-muted','含本次提問或對應正文未核對到的輸入；不計作正文取用。'),...otherPlayers.map(itemView));nodes.push(d);}
         if(uncertain.length){const d=el('details','folio-uncertain');d.dataset.key=last.id+':uncertain';d.append(el('summary','',`${uncertain.length} 則未核對到全文（可能裁剪或改寫）`),el('p','folio-muted','這些是曾交給酒館的內容；最終請求未找到相同全文，不能確認已完整取用。'),...uncertain.map(itemView));nodes.push(d);}
         const audit=el('details','folio-catalogue-audit');audit.dataset.key=last.id+':audit';audit.append(el('summary','',`選頁依據與容量 · ${last.candidates.length} 頁候選`),el('p','folio-muted',`歷史估算 ${last.beforeTokens.toLocaleString()} → ${last.tokens.toLocaleString()} tokens；書頁目標 ${last.budget.toLocaleString()}。不是最終請求的總 token 數。`));
+        if(last.limits)audit.append(el('p','folio-muted',`當時模型 ${last.limits.model||'未知'}：${last.limits.context?`實際上下文 ${last.limits.context.toLocaleString()}`:'沿用酒館上下文'}，可用輸入 ${last.limits.capacity.toLocaleString()}；近期正文最多 ${last.limits.recentPages||'不限'} 頁，最多召回 ${last.limits.recallPages} 頁。`));
         for(const c of last.candidates){const skipped=last.skipped.some(s=>s.index===c.index),partial=last.items.some(x=>x.index===c.index&&x.partial),content=el('div','folio-candidate-content');content.append(summaryView(c.summary,'這頁沒有摘要'),el('p','folio-candidate-reason',`選頁判斷：${c.reason}`));audit.append(disclosure(`當時第 ${c.number} 頁 · ${c.title} · ${skipped?'選中但放不下':partial?'選中並取用相關原文片段':c.selected?'選中':'未選中'}`,content,'folio-candidate'));}
         if(!last.candidates.length)audit.append(el('p','folio-muted',last.mode==='building'?'舊頁目錄尚未齊全，當時保留原歷史。':'當時沒有需要額外查找的舊頁。'));nodes.push(audit);
         if(archived.length)nodes.push(archive);replace(nodes);

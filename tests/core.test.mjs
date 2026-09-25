@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {KEY, cleanBody, splitBody, sourceOf, newRecord, validRecord, parseSummary, parsePageSummary, summarySections, parseSelection, rankCandidates,
-    cosine, estimatedTokens, budgetFor, recentIndices, chooseModel, summaryChunks} from '../src/core.js';
+    cosine, estimatedTokens, budgetFor, listedContext, knownContext, recentIndices, chooseModel, summaryChunks} from '../src/core.js';
 import {WordPiece} from '../src/tokenizer.js';
 import {sha256} from '../src/hash.js';
 import {createHash} from 'node:crypto';
@@ -61,6 +61,9 @@ test('hybrid search ranks names and semantic paraphrases',()=>{
 test('budget follows tokens and protects current user/continuation, not fixed floors',()=>{
     assert.ok(estimatedTokens('中'.repeat(10))>estimatedTokens('a'.repeat(10)));
     assert.equal(budgetFor(128000).history,64000);assert.equal(budgetFor(4000).history,2800);
+    const unlocked=budgetFor(1970000,{context:163840,reply:30000});assert.equal(unlocked.capacity,133840);assert.equal(unlocked.recent,12000);assert.equal(unlocked.tier,'standard');
+    assert.equal(budgetFor(30000,{context:32768,reply:30000}).capacity,16384,'an oversized reply cannot starve the prompt');assert.equal(budgetFor(900000,{context:1048576,reply:8000}).tier,'long');
+    assert.equal(listedContext({context_length:163840,top_provider:{context_length:131072}}),131072);assert.equal(listedContext({inputTokenLimit:1048576}),1048576);assert.equal(knownContext('mystery-model'),0);
     const chat=[{is_user:false},{is_user:true},{is_user:false},{is_user:true},{is_user:false}];
     const recent=recentIndices(chat,[100,100,100,1000,1000],100);
     assert.deepEqual([...recent.picked].sort(),[3,4]);
