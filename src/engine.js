@@ -95,6 +95,8 @@ export class Engine {
             if(this.disposed||load!==this.usageLoad||identity!==this.host.identity())return;
             this.usages=this.adoptUsage(mergeUsage(this.usages,Array.isArray(records)?records:[]));
             if(this.usages.length)this.rememberUsage(this.usages[0],identity);this.emit();
+            const stored=this.host.readUsage?.()??[];
+            if(stored.some(r=>!r.compact))this.cache.appendUsage(identity,stored).then(()=>{if(!this.disposed&&identity===this.host.identity())this.host.stageUsage?.(identity,this.usages);}).catch(()=>{});
         }).catch(()=>{if(!this.disposed&&load===this.usageLoad)this.usageError=this.usages.length?'本機備份讀取失敗，已顯示聊天中保存的取用紀錄':'發送紀錄暫時無法讀取，請稍後重新開啟聊天';})
             .finally(()=>{if(!this.disposed&&load===this.usageLoad){this.usageLoading=false;this.emit();}});
     }

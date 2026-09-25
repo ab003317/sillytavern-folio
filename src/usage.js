@@ -1,3 +1,4 @@
+import { cleanBody, chatStamps, KEY } from './core.js';
 export const USAGE_LIMIT=20;
 export const USAGE_KEY='folio_usage';
 export const RESPONSE_KEY='folio_usage_id';
@@ -21,6 +22,27 @@ export function usageOverview(record) {
         players:(record?.items??[]).filter(x=>x.role==='user'&&x.final===true).length,selected:selected.size,skipped:record?.skipped?.length??0};
 }
 
+// The chat file is re-sent on every host save, so it carries references only.
+// A body is dropped only when the chat still holds the exact source it was cut
+// from; the full snapshot stays in this browser's IndexedDB.
+export function compactUsage(record,chat=[]) {
+    if(!record?.items)return record;
+    const stamps=chatStamps(chat),at=new Map();stamps.forEach((s,i)=>at.set(s,at.has(s)?-1:i));
+    const items=record.items.map(item=>{
+        if(item.bodyFromSource||item.role==='user'||item.partial||typeof item.body!=='string')return item;
+        const i=at.get(item.sourceStamp??record.stamps?.[item.index]);
+        if(!(i>=0)||cleanBody(chat[i].mes)!==item.body)return item;
+        const {body,...rest}=item;return {...rest,bodyFromSource:true,bodyLength:body.length};
+    });
+    const candidates=(record.candidates??[]).map(({summary,...c})=>({...c,summaryFromSource:true}));
+    return {...record,compact:true,items,candidates};
+}
+function rebuild(record,item,positions,chat){
+    if(!item.bodyFromSource||typeof item.body==='string')return item;
+    const found=positions.get(item.sourceStamp??record.stamps?.[item.index])??[];
+    return {...item,body:found.length===1?cleanBody(chat[found[0]].mes):'（全文只保存在原瀏覽器；來源已刪除或變更）'};
+}
+
 // Use associations saved for that request, never today's shifted floor numbers.
 // Older receipts did not save pageIndex, so fall back only to their own item order.
 export function playerOwner(record,item) {
@@ -35,7 +57,9 @@ export function mergeUsage(...groups) {
         const old=byId.get(record.id);
         const newer=(record.final.observedAt??0)-(old?.final.observedAt??0);
         const binding=r=>(r?.result?.messageId?2:r?.result?1:0);
-        if(!old||newer>0||(newer===0&&(binding(record)>binding(old)||(binding(record)===binding(old)&&(record.result?.boundAt??0)>(old.result?.boundAt??0)))))byId.set(record.id,record);
+        const later=newer>0||(newer===0&&(binding(record)>binding(old)||(binding(record)===binding(old)&&(record.result?.boundAt??0)>(old?.result?.boundAt??0))));
+        const same=!!old&&newer===0&&binding(record)===binding(old)&&(record.result?.boundAt??0)===(old.result?.boundAt??0);
+        if(!old||later||(same&&old.compact&&!record.compact))byId.set(record.id,record);
     }
     const byTime=(a,b)=>(b.final.observedAt??b.createdAt)-(a.final.observedAt??a.createdAt),ordered=[...byId.values()].sort(byTime);
     // Legacy request-only entries must not evict proven reply-bound receipts.
@@ -59,7 +83,13 @@ export function usageView(records,stamps,roles=[],chat=[]) {
         const resultState=resultStamp?(resultPositions.length===1?'present':resultPositions.length?'ambiguous':'missing'):(inferred?'present':'unbound');
         return {...record,resultState,resultIndex:resultPositions.length===1?resultPositions[0]:inferred?expected:null,
         sourceChanged:!Array.isArray(record.stamps)||record.stamps.some((stamp,i)=>stamps[i]!==stamp),
+        candidates:(record.candidates??[]).map(c=>{
+            if(typeof c.summary==='string')return c;
+            const found=positions.get(record.stamps?.[c.index])??[];
+            return {...c,summary:found.length===1?String(chat[found[0]]?.extra?.[KEY]?.summary??''):''};
+        }),
         items:record.items.map(item=>{
+            item=rebuild(record,item,positions,chat);
             const stamp=item.sourceStamp??record.stamps?.[item.index],found=positions.get(stamp)??[];
             return {...item,sourceState:!stamp?'unknown':found.length===1?'present':found.length?'ambiguous':'missing',currentIndex:found.length===1?found[0]:null};
         }),

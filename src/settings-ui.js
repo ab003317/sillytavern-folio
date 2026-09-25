@@ -41,3 +41,14 @@ export function mountAdvancedOptions(engine,container,{el,button,info,heading}){
     function render(state){for(const [role,f] of Object.entries(fields))if(!f.dirty){const values=state.advanced?.[role]??generationOptions({},role);for(const [key,input] of Object.entries(f.inputs))input.value=String(values[key]??'');}}
     render(engine.snapshot());return {render};
 }
+
+export function mountPerformanceOptions(engine,container,{el,info}){
+    const section=fold(el,'手機效能'),input=select(el,[['true','開啟（預設）'],['false','關閉']]),calm=select(el,[['auto','僅手機等觸控裝置（預設）'],['on','所有裝置'],['off','關閉']]),feedback=el('p','folio-api-feedback');feedback.setAttribute('role','status');
+    section.append(el('p','folio-muted','酒館在每次收到、編輯或刪除訊息後，都會在背景完整組裝一次提示詞（含整本世界書掃描），只為更新提示詞管理面板上的 token 數，面板沒打開也照做。開啟後改為打開該面板時才補算一次；實際發送不受影響。'),
+        field(el,info,input,'面板關閉時延後提示詞試算','大型世界書或遞迴設定下，手機每則回覆可省下數秒卡頓。關閉即恢復酒館原本行為。'),
+        field(el,info,calm,'訊息美化中的無限循環動畫只播一次','狀態欄等美化常有永不停止的裝飾動畫（如掃描線），手機會因此持續重繪、打字與捲動發澀。開啟後這類動畫播完一輪即停；彈出、展開等一次性動畫不受影響。不修改角色卡或預設。'),feedback);
+    calm.addEventListener('change',()=>{engine.host.settings().calmAnimations=calm.value;engine.host.context().saveSettingsDebounced();engine.performanceChanged?.();feedback.textContent=calm.value==='off'?'已關閉；動畫恢復原樣（已停止的動畫需重新渲染該樓層）。':'已套用到目前顯示的美化內容。';});
+    input.addEventListener('change',()=>{engine.host.settings().deferDryRun=input.value==='true';engine.host.context().saveSettingsDebounced();feedback.textContent=input.value==='true'?'已開啟；下次打開提示詞管理面板時會補算。':'已關閉；恢復酒館原本的背景試算。';});
+    container.append(section);
+    return {render(){input.value=String(engine.host.settings().deferDryRun!==false);calm.value=engine.host.settings().calmAnimations??'auto';}};
+}

@@ -54,3 +54,17 @@ test('legacy failed requests cannot evict a proven bound receipt or all claim th
     assert.ok(mergeUsage(pending,[bound]).some(r=>r.id==='bound'));
     assert.ok(usageView(pending,['question','reply'],['user','assistant']).every(r=>r.resultState==='unbound'));
 });
+
+test('chat copy of a receipt keeps references only and rebuilds bodies losslessly from the live chat',async()=>{
+    const {compactUsage}=await import('../src/usage.js'),{chatStamps,KEY}=await import('../src/core.js');
+    const chat=[{mes:'玩家問信件',is_user:true,name:'玩家',send_date:'a',extra:{}},{mes:'<正文>船長交出藍色信件。</正文><状态栏>饥饿</状态栏>',is_user:false,name:'船長',send_date:'b',extra:{[KEY]:{summary:'船長交信'}}}];
+    const stamps=chatStamps(chat),full={...record('r',5),stamps,candidates:[{index:1,summary:'船長交信',selected:true}],
+        items:[{index:0,role:'user',body:'玩家問信件'},{index:1,role:'assistant',body:'船長交出藍色信件。'},{index:1,role:'assistant',partial:true,body:'片段'}]};
+    const compact=compactUsage(full,chat);
+    assert.equal(compact.items[1].body,undefined);assert.equal(compact.items[1].bodyFromSource,true);assert.equal(compact.items[0].body,'玩家問信件');assert.equal(compact.items[2].body,'片段');assert.equal(compact.candidates[0].summary,undefined);
+    const view=usageView([compact],stamps,['user','assistant'],chat)[0];
+    assert.deepEqual(view.items.map(x=>x.body),full.items.map(x=>x.body));assert.equal(view.candidates[0].summary,'船長交信');
+    chat[1].mes='改寫後的正文';const gone=usageView([compact],chatStamps(chat),['user','assistant'],chat)[0];assert.match(gone.items[1].body,/只保存在原瀏覽器/);
+    assert.equal(mergeUsage([compact],[full])[0].compact,undefined,'the full local snapshot wins over the chat copy');
+    const edited={...full,items:[{index:1,role:'assistant',body:'不同於來源的舊版本'}]};assert.equal(compactUsage(edited,[chat[0],{...chat[1],mes:'<正文>船長交出藍色信件。</正文>'}]).items[0].body,'不同於來源的舊版本');
+});

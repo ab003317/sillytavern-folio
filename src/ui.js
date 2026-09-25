@@ -1,6 +1,6 @@
 import { mountApiForms } from './api-ui.js';
 import { USAGE_LIMIT, usageOverview, playerOwner } from './usage.js';
-import { fold, mountMemoryOptions } from './settings-ui.js';
+import { fold, mountMemoryOptions, mountPerformanceOptions } from './settings-ui.js';
 import { summarySections } from './core.js';
 let nextId=0;
 function el(tag,cls='',text=''){const n=document.createElement(tag);n.className=cls;if(text)n.textContent=text;return n;}
@@ -81,7 +81,7 @@ export function mountUI(engine){
         bar.append(all,missing,vectors,info('全部：重做所有劇情頁，包含人工修改的摘要。未整理：缺摘要就接續整理，摘要完成但缺向量也算未完成，只補向量。「補齊本機向量」完全不重做摘要、不呼叫模型 API，沒有摘要的頁不會處理。包含隱藏正文，不含系統通知，不受搜尋／篩選限制。關閉自動記憶時也能手動執行。'),stop,retry);section.append(bar,scope,detail,progress,outcome);target.append(section);rebuildPanels.push({all,missing,vectors,scope,stop,retry,detail,progress,outcome});
     }
     const runBody=el('div'),runActivity=fold(el,'最近動作'),activityBody=el('div');runActivity.append(activityBody);panels.run.prepend(runBody);panels.run.append(runActivity);
-    const memoryOptions=mountMemoryOptions(engine,panels.pages,{el,button,info});
+    const memoryOptions=mountMemoryOptions(engine,panels.pages,{el,button,info}),performanceOptions=mountPerformanceOptions(engine,panels.pages,{el,info});
     const pageTools=el('div','folio-toolbar'),search=el('input','folio-search'),filter=el('select');
     search.type='search';search.placeholder='找標題、人物、摘要或正文';search.setAttribute('aria-label','搜尋書頁');
     filter.setAttribute('aria-label','篩選書頁');for(const [value,label]of [['all','全部書頁'],['pending','尚待整理'],['pinned','已釘選']]){const o=el('option','',label);o.value=value;filter.append(o);}
@@ -286,7 +286,7 @@ export function mountUI(engine){
             f.outcome.textContent=state.stopping||state.stopFailed?rebuildText(job):state.rebuildQueued?'已排隊；等待本次角色回覆完成後開始。':state.leaseWaiting&&!job?.pending?'另一個視窗正在整理；完成後會自動接手，可按「停止本次重整」取消等待。':state.resetting&&!job?.pending?'正在建立手動重新整理任務。':job?`本次${job.mode==='vectors'?'向量補齊':'重整'}：${job.mode==='vectors'?'':`摘要 ${job.done}/${job.total} 頁，`}向量 ${job.vectors}/${job.total} 頁${job.removed?`；${job.removed} 頁已刪除或變更，已略過`:''}${job.cancelled?`；${job.cancelled} 頁已停止並保留原記錄`:''}。${job.pending?state.generating?'等待正文生成結束後繼續。':state.warning?'等待重試，可立即重試或停止恢復未完成頁。':'正在處理，完成後會自動更新。':job.vectorFallback?'摘要已保留，向量尚待補齊，可按「補齊本機向量」。':job.cancelled?'已停止。':'已完成。'}`:'';
         }
     }
-    function render(){renderRebuild();memoryOptions.render(state);if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}
+    function render(){renderRebuild();memoryOptions.render(state);performanceOptions.render();if(tab==='run')renderRun();else if(tab==='pages')renderPages();else if(tab==='selection')renderSelection();else renderHelper();}
     function update(next){
         state=next;toggle.checked=next.enabled;toggleState.textContent=next.enabled?'已開啟':'已關閉';toggleLabel.dataset.enabled=String(next.enabled);status.textContent=next.status;warning.textContent=next.warning;warning.hidden=!next.warning;
         badge.textContent=next.conflict?'衝突暫停':!next.enabled?'暫停':`${next.ready}/${next.total}`;

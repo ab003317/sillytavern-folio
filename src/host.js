@@ -1,7 +1,7 @@
 import { estimatedTokens, SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS, listedContext, knownContext, UNKNOWN_MODEL_CONTEXT } from './core.js';
 import { PROVIDERS, directConfig, providerRequest, modelIds, apiError } from './providers.js';
 import { memoryOptions, generationOptions, rolePrompt, checkContext } from './settings.js';
-import {mergeUsage,USAGE_KEY} from './usage.js';
+import {mergeUsage,compactUsage,USAGE_KEY} from './usage.js';
 export const MODEL_ROLES = {summary:'總結模型',selection:'提取模型'};
 
 export function helperPayload(model) {
@@ -302,7 +302,7 @@ export class Host {
     readUsage(){const records=this.context().chatMetadata?.[USAGE_KEY]?.records;return Array.isArray(records)?records:[];}
     stageUsage(identity,records){
         const c=this.context();if(!identity||identity!==this.identity()||!c.chatMetadata||!records.length)return false;
-        const merged=mergeUsage(records,this.readUsage());
+        const merged=mergeUsage(records,this.readUsage()).map(r=>compactUsage(r,c.chat??[]));
         if(JSON.stringify(merged)===JSON.stringify(this.readUsage()))return false;
         c.chatMetadata[USAGE_KEY]={version:1,records:structuredClone(merged)};
         // Do not save here. During streaming ST emits GENERATION_ENDED before
