@@ -65,10 +65,10 @@ with sync_playwright() as p:
         page.locator('.folio-dialog').screenshot(path=str(OUT/'tiers-advanced-mobile.png'))
         page.set_viewport_size({'width':1280,'height':1000})
         page.get_by_role('tab',name='書頁目錄',exact=True).click()
-        assert not page.get_by_label('摘要詳略',exact=True).is_visible()
+        assert not page.get_by_label('小總結詳略',exact=True).is_visible()
         assert not page.get_by_role('button',name='修改小摘要',exact=True).is_visible()
         page.locator('summary').filter(has_text='摘要與取用設定').click()
-        page.get_by_label('摘要詳略',exact=True).select_option('detailed')
+        page.get_by_label('小總結詳略',exact=True).select_option('detailed')
         page.get_by_label('摘要重點',exact=True).select_option('relationships')
         page.get_by_label('保留近期正文頁數',exact=True).fill('2')
         page.get_by_label('每次最多召回舊正文',exact=True).fill('3')
@@ -82,7 +82,7 @@ with sync_playwright() as p:
         assert len(calls)==3
         for call in calls:
             assert call['model']=='fixture-large' and call['max_tokens']==700 and call['temperature']==0.4 and call['top_p']==0.7
-            assert '按角色承諾記錄摘要' in call['messages'][0]['content'] and '180 至 350' in call['messages'][0]['content']
+            assert '按角色承諾記錄摘要' in call['messages'][0]['content'] and 'summaryLength' in call['messages'][0]['content'] and '"summaryLength"' in call['messages'][1]['content']
         page.wait_for_function("[...document.querySelectorAll('.folio-rebuild-status')].some(e=>e.textContent.includes('已完成'))",timeout=90000)
         page.evaluate("testContext.chatCompletionSettings.custom_model='changed-main';events.emit('CHATCOMPLETION_MODEL_CHANGED')")
         page.get_by_role('button',name='重新整理此頁',exact=True).click()
@@ -90,7 +90,7 @@ with sync_playwright() as p:
         page.wait_for_function("document.querySelector('.folio-page-work').textContent.includes('已重新整理完成')",timeout=90000)
         assert calls[-1]['model']=='changed-main' and len(calls)==4
         page.get_by_role('button',name='關閉',exact=True).click();page.locator('#folio-wand').click()
-        assert not page.get_by_label('摘要詳略',exact=True).is_visible()
+        assert not page.get_by_label('小總結詳略',exact=True).is_visible()
         page.get_by_role('tab',name='記憶助手',exact=True).click();assert not page.locator('#folio-summary-source').is_visible()
         page.reload();page.wait_for_function('window.fixtureReady===true');page.locator('#folio-wand').click();page.get_by_role('tab',name='記憶助手',exact=True).click()
         assert not page.get_by_label('總結溫度',exact=True).is_visible()

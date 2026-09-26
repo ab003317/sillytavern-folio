@@ -18,7 +18,7 @@ class MemoryCache {
 }
 const story=chat=>chat.filter(m=>!m.extra?.folio_note&&!m.extra?.folio_summary);
 function message(text,i=0,user=false){return {mes:text,name:user?'玩家':'角色',is_user:user,send_date:`t${i}`,extra:{}};}
-function ready(r){for(const p of bookPages(r.c.chat)){const x=newRecord(p.message,p.playerInput);x.summary=p.body;x.done=true;p.message.extra[KEY]=x;r.engine.vectors.set(r.engine.vectorKey(x),[[1,0]]);}}
+function ready(r){for(const p of bookPages(r.c.chat)){const x=newRecord(p.message,p.playerInput);x.summary=p.body;x.done=true;x.format=3;x.blurb=p.body.slice(0,40);x.terms=[];p.message.extra[KEY]=x;r.engine.vectors.set(r.engine.vectorKey(x),[[1,0]]);}}
 function rig(messages=[message('港口的兩人交換信物，約定明日再見。')]) {
     const c={chat:[],chatId:'a',mainApi:'openai',saveSettingsDebounced(){}};
     const settings={enabled:true};let calls=0,saves=0;
@@ -1021,7 +1021,51 @@ test('summaries stay in story order around a recalled page in the middle',async(
     const core=structuredClone(r.c.chat);await r.engine.intercept(core,20000,()=>assert.fail('abort'),'normal');
     const shape=core.map(m=>m.extra?.folio_summary?`digest:${[...m.mes.matchAll(/第 (\d+) 頁/g)].map(x=>x[1]).join(',')}`:m.extra?.folio_note?'note':m.send_date);
     assert.deepEqual(shape,['digest:1,2','t4','t5','digest:4,5,6','t12','t13','t14','t15','note','t16']);
-    assert.match(core[0].mes,/^\[前情摘要：/);assert.match(core[3].mes,/^\[前情摘要（續）/);
+    assert.match(core[0].mes,/^\[前文小總結：/);assert.match(core[3].mes,/^\[前文小總結（續）/);
     assert.deepEqual(r.engine.last.summary.pages,[1,2,4,5,6]);assert.equal(r.engine.last.summary.parts.length,2);
     r.engine.captureFinal({type:'normal',messages:[{role:'user',content:core.map(m=>m.mes).join('\n\n')}]});assert.equal(r.engine.last.summary.final,true);
+});
+
+test('each page is saved with a blurb, a retelling sized to its length and verbatim terms',async()=>{
+    const r=rig([message('把信交給船長',0,true),message('船長在港口收下藍色信件，約定冬天前送到山城。',1)]);let request;r.host.memory=()=>({detail:'standard'});
+    r.host.complete=async(_s,p)=>{request=JSON.parse(p);return JSON.stringify({title:'船長的信',blurb:'船長在港口收下信。',summary:'船長收下藍色信件，約定冬天前送到山城。',terms:['船長','藍色信件','山城','藍染']});};
+    for(let i=0;i<3&&!bookPages(r.c.chat)[0].record?.done;i++)await r.engine.tick();
+    const record=bookPages(r.c.chat)[0].record;assert.equal(request.summaryLength,120);assert.equal(request.playerInput,'把信交給船長');
+    assert.equal(record.format,3);assert.equal(record.blurb,'船長在港口收下信。');assert.deepEqual(record.terms,['船長','藍色信件','山城']);assert.equal(r.engine.snapshot().legacy,0);
+});
+
+test('a long page split into parts joins its blurbs and merges its terms',async()=>{
+    const text=['甲地','乙地','丙地'].map(place=>`${place}發生的事。`.repeat(90)).join(''),r=rig([message(text)]);r.host.summaryChunkSize=()=>500;let n=0;
+    r.host.complete=async(_s,p)=>{const {text:part}=JSON.parse(p);n++;const place=['甲地','乙地','丙地'].find(x=>part.includes(x));return JSON.stringify({blurb:`第${n}段在${place}。`,summary:`${place}的經過。`,terms:[place]});};
+    for(let i=0;i<10&&!bookPages(r.c.chat)[0].record?.done;i++)await r.engine.tick();
+    const record=bookPages(r.c.chat)[0].record;assert.equal(record.format,3);assert.equal(record.parts.length,n);
+    assert.equal(record.blurb,record.blurbs.join(' '));assert.deepEqual(record.terms,['甲地','乙地','丙地'].filter(x=>record.terms.includes(x)));assert.ok(record.terms.length>=2);
+});
+
+test('the selector reads every older page blurb in page order, with term hits marked',async()=>{
+    const source=[];for(let i=0;i<24;i++){source.push(message('玩家'+i,2*i,true),message(`第${i}段`+'。'.repeat(200),2*i+1));}source.push(message('想起了銀鈴的約定',48,true));
+    const r=rig(source);ready(r);bookPages(r.c.chat).forEach((p,i)=>{p.record.blurb='簡介'+i;p.record.terms=i===2?['銀鈴']:['路人'+i];});
+    r.host.memory=()=>({recentPages:2});let request;r.host.complete=async(_s,p)=>{request=JSON.parse(p);return '{"ids":["p5"],"reasons":{"p5":"銀鈴約定"}}';};
+    await r.engine.intercept(structuredClone(r.c.chat),100000,()=>assert.fail('abort'),'normal');
+    assert.equal(request.catalogue.length,22,'all older pages, not a top-18 cut');assert.deepEqual(request.catalogue.map(c=>c.id),Array.from({length:22},(_,i)=>`p${2*i+1}`));
+    assert.equal(request.catalogue[2].blurb,'簡介2');assert.deepEqual(request.catalogue[2].hits,['銀鈴']);assert.equal(request.catalogue[0].hits,undefined);
+    assert.equal(r.engine.last.catalogue,22);assert.deepEqual(r.engine.last.candidates[0].hits,['銀鈴']);assert.equal(r.engine.last.candidates[0].selected,true);
+});
+
+test('short room keeps every page as a blurb before dropping to titles',async()=>{
+    const source=[];for(let i=0;i<8;i++){source.push(message('玩'+i,2*i,true),message(`第${i}段`+'。'.repeat(300),2*i+1));}source.push(message('問',16,true));
+    const r=rig(source);ready(r);bookPages(r.c.chat).forEach((p,i)=>{p.record.summary='很長的小總結'.repeat(20)+i;p.record.blurb='簡'+i;p.record.title='T'+i;});
+    r.host.memory=()=>({recentPages:1,historyBudget:600});r.host.complete=async()=>'{"ids":[]}';
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,100000,()=>assert.fail('abort'),'normal');const s=r.engine.last.summary;
+    assert.ok(s.blurbOnly.length>0);assert.equal(s.titleOnly.length,0);assert.equal(s.omitted,0);assert.match(core[0].mes,/第 1 頁〈T0〉：簡0/);
+});
+
+test('legacy cards are upgraded by the missing-only rebuild, manual edits are left alone',async()=>{
+    const r=rig([message('舊頁一',0),message('舊頁二',1),message('最新',2)]);ready(r);const pages=bookPages(r.c.chat);
+    delete pages[0].record.format;delete pages[1].record.format;pages[1].record.edited=true;
+    const snap=r.engine.snapshot();assert.equal(snap.legacy,1);assert.equal(snap.missing,1);assert.equal(snap.entries[0].legacy,true);
+    let calls=0;r.host.complete=async()=>{calls++;return JSON.stringify({blurb:'新簡介',summary:'新的小總結',terms:['舊頁一']});};
+    await r.engine.refreshMissing();for(let i=0;i<6&&r.engine.snapshot().rebuild?.pending;i++)await r.engine.tick();
+    const after=bookPages(r.c.chat);assert.equal(calls,1);assert.equal(after[0].record.format,3);assert.deepEqual(after[0].record.terms,['舊頁一']);
+    assert.equal(after[1].record.edited,true);assert.equal(after[1].record.format,undefined);assert.equal(r.engine.snapshot().legacy,0);
 });

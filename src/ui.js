@@ -198,7 +198,7 @@ export function mountUI(engine){
             const b=button('',()=>{selected=e.ref;editing=false;renderPages();if(matchMedia('(max-width: 640px)').matches)reader.scrollIntoView({block:'start',behavior:'instant'});},'folio-page-link');
             b.setAttribute('aria-current',String(e.ref.handle===selected?.handle));b.dataset.index=String(e.index);
             const pendingLabel=e.automatic?`新回覆整理中：摘要 ${e.parts}/${e.totalParts} 段`:'舊聊天未整理；只會在手動重整時處理';
-            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.hidden?' · 隱藏正文':''}${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.summary||'尚無小摘要；正文已保留'),el('span','folio-page-state',e.rebuilding?e.ready?'正在補齊向量，保留已有摘要':e.previousSummary?'重整中，暫顯示舊摘要':`重整中：摘要 ${e.parts}/${e.totalParts} 段`:e.ready?e.indexed?`摘要與向量已就緒${e.droppedEvidence?` · 已忽略 ${e.droppedEvidence} 條無法核對的資料`:''}`:state.vectorLoading?'摘要完成，正在自動補向量':'摘要完成，向量等待重試':pendingLabel));fragment.append(b);
+            b.append(el('span','folio-page-meta',`第 ${e.number} 頁 · 聊天第 ${e.index+1} 則${e.hidden?' · 隱藏正文':''}${e.pinned?' · 已釘選':''}`),el('strong','',e.title),el('span','folio-page-excerpt',e.blurb||e.summary||'尚無簡介；正文已保留'),el('span','folio-page-state',e.rebuilding?e.ready?'正在補齊向量，保留已有摘要':e.previousSummary?'重整中，暫顯示舊摘要':`重整中：摘要 ${e.parts}/${e.totalParts} 段`:e.ready?e.legacy?'舊格式摘要，沒有簡介和詞條；按「一鍵整理未整理的」升級':e.indexed?`簡介、小總結、詞條與向量已就緒${e.terms.length?` · ${e.terms.length} 個詞條`:''}`:state.vectorLoading?'摘要完成，正在自動補向量':'摘要完成，向量等待重試':pendingLabel));fragment.append(b);
         }
         if(entries.length>shown)fragment.append(button('載入更多書頁',()=>{shown+=60;renderPages();}));
         if(!entries.length)fragment.append(el('p','folio-empty','沒有符合的書頁。開啟一段聊天，或換個詞搜尋。'));
@@ -208,12 +208,17 @@ export function mountUI(engine){
         const openDetails=new Set([...reader.querySelectorAll('details[open]')].map(n=>n.firstElementChild?.textContent));
         const nodes=[el('p','folio-page-meta',`第 ${e.number} 頁 · ${e.name} · 聊天第 ${e.index+1} 則`),el('h3','folio-reader-title',e.title)];
         if(e.playerInput)nodes.push(disclosure('當時的玩家輸入',e.playerInput));
-        nodes.push(heading('小摘要','助手與向量檢索讀的是這張目錄表。每列分開人物、事件、關係與未決線索；它只用來選頁，不會取代選中的正文。'),summaryView(e.summary,e.automatic?'新回覆正在整理，完成後會自動更新。':'這是舊聊天，不會自動整理。可按「重新整理此頁」或「一鍵整理未整理的」。'),heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body));
+        const emptyNote=e.automatic?'新回覆正在整理，完成後會自動更新。':'這是舊聊天，不會自動整理。可按「重新整理此頁」或「一鍵整理未整理的」。';
+        if(e.legacy)nodes.push(el('p','folio-usage-warning','這頁是舊格式摘要，沒有簡介和詞條。按「重新整理此頁」或「一鍵整理未整理的」升級。'));
+        nodes.push(heading('簡介','查頁助手讀的是全部書頁的簡介，像看書架上的封底簡介，決定這次要翻哪幾頁的全文。'),el('p','folio-summary-text',e.blurb||'（尚無簡介）'),
+            heading('小總結','本頁正文的壓縮版。這頁的正文沒被選中時，會以小總結按頁序代替正文送給模型。'),summaryView(e.summary,emptyNote),
+            heading('詞條','寫新正文時，用本次輸入和最近劇情比對這些詞條找相關舊頁，命中頁的小總結再遞迴帶出下一層。只收錄原文裡逐字出現的詞。'),el('p','folio-summary-text',e.terms.length?e.terms.join('、'):'（尚無詞條）'),
+            heading('清理後正文','選中這一頁時，送入歷史的是這段完整正文，加上當時的玩家輸入。原聊天訊息不會被修改。'),el('div','folio-prose',e.body));
         const actions=el('div','folio-toolbar'),manage=fold(el,'管理這一頁'),manageActions=el('div','folio-toolbar');
         const refresh=button(e.rebuilding?'正在重整此頁…':'重新整理此頁',perform(()=>engine.refresh(e.ref)),'folio-primary');refresh.disabled=!!state.resetting||!!state.rebuild?.pending||!!state.generating;
-        actions.append(refresh);manageActions.append(button(e.pinned?'取消釘選':'釘選這頁',perform(()=>engine.pin(e.ref))),button('修改小摘要',()=>{
-            editing=true;const input=el('textarea','folio-summary-edit');input.rows=6;input.value=e.summary;input.setAttribute('aria-label','修改小摘要');const bar=el('div','folio-toolbar');
-            bar.append(button('保存摘要',perform(async()=>{await engine.editSummary(e.ref,input.value);editing=false;renderPages();}),'folio-primary'),button('取消',()=>{editing=false;renderPages();}));reader.append(input,bar);input.focus();
+        actions.append(refresh);manageActions.append(button(e.pinned?'取消釘選':'釘選這頁',perform(()=>engine.pin(e.ref))),button('修改小總結',()=>{
+            editing=true;const input=el('textarea','folio-summary-edit');input.rows=6;input.value=e.summary;input.setAttribute('aria-label','修改小總結');const bar=el('div','folio-toolbar');
+            bar.append(button('保存小總結',perform(async()=>{await engine.editSummary(e.ref,input.value);editing=false;renderPages();}),'folio-primary'),button('取消',()=>{editing=false;renderPages();}));reader.append(input,bar);input.focus();
         }),button('回到聊天',perform(()=>{const p=engine.resolvePage(e.ref),m=document.querySelector(`#chat .mes[mesid="${p.index}"]`);if(m){dialog.close();m.scrollIntoView({block:'center',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});}else throw new Error('這則訊息尚未載入聊天畫面，請先載入更早的訊息。');})));
         const pageStatus=el('p','folio-page-work');pageStatus.setAttribute('role','status');
         pageStatus.textContent=state.resetting?'正在保存重新整理任務…':e.rebuilding?state.warning?`等待重試：${state.warning}`:state.work?.page===e.number?state.status:'已排入優先重整；稍後自動更新小摘要與向量。':e.rebuilt?'此頁已重新整理完成。':'';
@@ -236,7 +241,7 @@ export function mountUI(engine){
         nodes.push(el('p','folio-muted',`${dateStamp(last.final.observedAt)}　現存回覆可查看 ${records.length} 次；共保留 ${state.usageStoredCount??records.length} / ${USAGE_LIMIT} 次`));
         if(last.sourceChanged)nodes.push(el('p','folio-usage-warning','聊天已有刪除或變更；以下保留當時發送快照，不代表下一次取用。'));
         nodes.push(disclosure('當時的玩家輸入',last.query||'沒有新的玩家輸入'),heading(`已核對取用：${counts.bodies} 頁正文、${counts.players} 則玩家背景`,'正文為主，玩家背景折疊附在對應正文下。這只是顯示順序；實際請求仍按聊天時間排列。'),el('p','folio-recall-count',`召回舊正文 ${counts.recalled} 頁 · 保留近期正文 ${counts.recent} 頁${counts.retained?` · 原歷史 ${counts.retained} 頁`:''}`));
-        if(last.summary){const s=last.summary,d=disclosure(`前情摘要：${s.pages.length} 頁未送正文的舊頁以目錄補上${s.titleOnly?.length?`（其中 ${s.titleOnly.length} 頁只留標題）`:''}${s.omitted?`，更早 ${s.omitted} 頁因容量省略`:''}${s.final===false?'（最終請求未核對到）':''}`,s.body??'全文只保存在原瀏覽器。','folio-recall-note');d.dataset.key=last.id+':summary';nodes.push(d);}
+        if(last.summary){const s=last.summary,d=disclosure(`前文小總結：${s.pages.length} 頁未送正文的舊頁以小總結按頁序代替${s.blurbOnly?.length?`（${s.blurbOnly.length} 頁只留簡介）`:''}${s.titleOnly?.length?`（${s.titleOnly.length} 頁只留標題）`:''}${s.omitted?`，更早 ${s.omitted} 頁因容量省略`:''}${s.final===false?'（最終請求未核對到）':''}`,s.body??'全文只保存在原瀏覽器。','folio-recall-note');d.dataset.key=last.id+':summary';nodes.push(d);}
         if(last.note){const note=disclosure(`書頁回顧：提示模型第 ${last.note.pages.join('、')} 頁與本次輸入相關${last.note.final===false?'（最終請求未核對到）':''}`,last.note.body,'folio-recall-note');note.dataset.key=last.id+':note';nodes.push(note);}
         if(last.unready)nodes.push(el('p','folio-muted',`${last.unready} 頁舊正文當時尚未整理，已原樣保留，未參與查頁。`));
         if(!counts.bodies)nodes.push(el('p','folio-usage-warning','這次未核對到任何完整正文。玩家背景不能算作正文取用；請查看下方未核對紀錄。'));
@@ -262,9 +267,9 @@ export function mountUI(engine){
         const otherPlayers=kept.filter(x=>x.role==='user'&&!attached.has(x));
         if(otherPlayers.length){const d=el('details','folio-other-players');d.dataset.key=last.id+':players';d.append(el('summary','',`其他已發送玩家輸入（${otherPlayers.length} 則）`),el('p','folio-muted','含本次提問或對應正文未核對到的輸入；不計作正文取用。'),...otherPlayers.map(itemView));nodes.push(d);}
         if(uncertain.length){const d=el('details','folio-uncertain');d.dataset.key=last.id+':uncertain';d.append(el('summary','',`${uncertain.length} 則未核對到全文（可能裁剪或改寫）`),el('p','folio-muted','這些是曾交給酒館的內容；最終請求未找到相同全文，不能確認已完整取用。'),...uncertain.map(itemView));nodes.push(d);}
-        const audit=el('details','folio-catalogue-audit');audit.dataset.key=last.id+':audit';audit.append(el('summary','',`選頁依據與容量 · ${last.candidates.length} 頁候選`),el('p','folio-muted',`歷史估算 ${last.beforeTokens.toLocaleString()} → ${last.tokens.toLocaleString()} tokens；書頁目標 ${last.budget.toLocaleString()}。不是最終請求的總 token 數。`));
+        const audit=el('details','folio-catalogue-audit');audit.dataset.key=last.id+':audit';audit.append(el('summary','',`選頁依據與容量 · 助手看過 ${last.catalogue??last.candidates.length} 頁簡介`),el('p','folio-muted',`歷史估算 ${last.beforeTokens.toLocaleString()} → ${last.tokens.toLocaleString()} tokens；書頁目標 ${last.budget.toLocaleString()}。不是最終請求的總 token 數。`));
         if(last.limits)audit.append(el('p','folio-muted',`當時模型 ${last.limits.model||'未知'}：${last.limits.context?`實際上下文 ${last.limits.context.toLocaleString()}`:'沿用酒館上下文'}，可用輸入 ${last.limits.capacity.toLocaleString()}；近期正文最多 ${last.limits.recentPages||'不限'} 頁，最多召回 ${last.limits.recallPages} 頁。`));
-        for(const c of last.candidates){const skipped=last.skipped.some(s=>s.index===c.index),partial=last.items.some(x=>x.index===c.index&&x.partial),content=el('div','folio-candidate-content');content.append(summaryView(c.summary,'這頁沒有摘要'),el('p','folio-candidate-reason',`選頁判斷：${c.reason}`));audit.append(disclosure(`當時第 ${c.number} 頁 · ${c.title} · ${skipped?'選中但放不下':partial?'選中並取用相關原文片段':c.selected?'選中':'未選中'}`,content,'folio-candidate'));}
+        for(const c of last.candidates){const skipped=last.skipped.some(s=>s.index===c.index),partial=last.items.some(x=>x.index===c.index&&x.partial),content=el('div','folio-candidate-content');if(c.blurb)content.append(el('p','folio-summary-text',`簡介：${c.blurb}`));if(c.hits?.length)content.append(el('p','folio-muted',`命中詞條：${c.hits.join('、')}`));content.append(summaryView(c.summary,'小總結只保存在原瀏覽器'),el('p','folio-candidate-reason',`選頁判斷：${c.reason}`));audit.append(disclosure(`當時第 ${c.number} 頁 · ${c.title} · ${skipped?'選中但放不下':partial?'選中並取用相關原文片段':c.selected?'選中':'未選中'}`,content,'folio-candidate'));}
         if(!last.candidates.length)audit.append(el('p','folio-muted',last.mode==='building'?'舊頁目錄尚未齊全，當時保留原歷史。':'當時沒有需要額外查找的舊頁。'));nodes.push(audit);
         if(archived.length)nodes.push(archive);replace(nodes);
     }
@@ -280,7 +285,7 @@ export function mountUI(engine){
             f.all.textContent=state.rebuildMode==='all'&&working?working:'一鍵重新整理全部';
             f.missing.textContent=state.rebuildMode==='missing'&&working?working:'一鍵整理未整理的';
             f.vectors.textContent=state.rebuildMode==='vectors'&&working?working:'補齊本機向量';
-            f.scope.textContent=`全部重做：${state.total} 頁　僅補未整理：${state.missing} 頁（缺摘要 ${state.summaryMissing} 頁、只缺向量 ${state.vectorMissing} 頁）`;
+            f.scope.textContent=`全部重做：${state.total} 頁　僅補未整理：${state.missing} 頁（缺摘要 ${state.summaryMissing} 頁、只缺向量 ${state.vectorMissing} 頁${state.legacy?`、舊格式待升級 ${state.legacy} 頁`:''}）`;
             f.detail.textContent=(state.rebuildQueued?rebuildText():`包含 ${state.hidden} 頁隱藏正文，不含系統通知。全部重做會覆蓋摘要並呼叫 API；補未整理保留已有摘要，只為缺摘要的頁呼叫 API。向量會自動在本機補齊，按鈕保留作手動重試。`)+(state.vectorLoading?'正在恢復／建立本機向量，待補數量核對中。':'')+(state.generating&&!state.rebuildQueued?'目前正在生成回覆；現在按下會排隊，回覆完成後開始。':'');
             f.stop.hidden=!(state.stopping||state.resetting||state.rebuildQueued||job?.pending);f.stop.disabled=!!state.stopping;f.stop.textContent=state.stopping?'正在停止…':state.stopFailed?'重試停止':state.rebuildQueued?'取消排隊':'停止本次重整';f.retry.hidden=state.stopFailed||state.stopping||!job?.pending||!state.warning;f.retry.disabled=state.busy;
             f.progress.hidden=state.rebuildQueued||(state.resetting&&!job?.pending)||!job;setRebuildProgress(f.progress,job);

@@ -57,7 +57,7 @@ test('advanced output sampling and prompt reach main, direct and profile request
         await host.complete('ignored','story');host.configureDirect('summary',{provider:'custom',baseUrl:'https://fixture.invalid/v1',model:'direct-model'});await host.complete('ignored','story');
         let profile;c.ConnectionManagerRequestService={getSupportedProfiles:()=>[{id:'p',name:'P',model:'profile-model'}],sendRequest:async(...args)=>{profile=args;return {content:'{"summary":"測試"}'};}};
         host.configureHelper('summary','p','profile-model');await host.complete('ignored','story');
-        for(const call of calls){assert.equal(call.max_tokens,640);assert.equal(call.temperature,.35);assert.equal(call.top_p,.8);assert.match(call.messages[0].content,/記錄角色承諾/);assert.match(call.messages[0].content,/180 至 350/);}
+        for(const call of calls){assert.equal(call.max_tokens,640);assert.equal(call.temperature,.35);assert.equal(call.top_p,.8);assert.match(call.messages[0].content,/記錄角色承諾/);assert.match(call.messages[0].content,/summaryLength/);}
         assert.equal(profile[2],640);assert.equal(profile[4].temperature,.35);assert.equal(profile[4].top_p,.8);assert.match(profile[1][0].content,/記錄角色承諾/);
         assert.equal(JSON.stringify(c.chatCompletionSettings),before);assert.equal(host.advanced('selection').maxTokens,1200);
         await assert.rejects(host.complete('','中'.repeat(10000)),/上下文上限/);assert.equal(calls.length,2);
@@ -68,24 +68,14 @@ test('invalid advanced settings cannot replace saved values; reset restores defa
     assert.throws(()=>host.configureAdvanced('summary',{contextTokens:1000,maxTokens:800}),/上下文/);assert.deepEqual(host.advanced('summary'),saved);
     assert.throws(()=>generationOptions({temperature:3}));assert.throws(()=>memoryOptions({recallPages:9}));assert.throws(()=>memoryOptions({recallNote:'maybe'}));assert.equal(memoryOptions({}).recallPages,0);assert.equal(memoryOptions({recallNote:'false'}).recallNote,false);
     const text='連續正文內容。'.repeat(1700),size=host.summaryChunkSize();assert.ok(size<3600);assert.equal(splitBody(text,size).join(''),text);
-    host.configureAdvanced('summary',{});assert.equal(host.advanced('summary').prompt,'');assert.match(rolePrompt('summary',{},{}),/目錄編輯/);
+    host.configureAdvanced('summary',{});assert.equal(host.advanced('summary').prompt,'');assert.match(rolePrompt('summary',{},{}),/書頁整理員/);
 });
-test('default summaries are detailed retrieval cards instead of vague plot blurbs',()=>{
+test('default page record asks for a blurb, an ordered retelling and verbatim search terms',()=>{
     const memory=memoryOptions({}),prompt=rolePrompt('summary',{},memory);
-    assert.equal(memory.detail,'detailed');
-    assert.equal(generationOptions({},'summary').maxTokens,1200);
-    assert.match(prompt,/180 至 350/);
-    assert.match(prompt,/人物與實體/);
-    assert.match(prompt,/事件與結果/);
-    assert.match(prompt,/目標與線索/);
-    assert.match(prompt,/不用/);
-    assert.match(prompt,/speaker 僅是/);
-    assert.match(prompt,/玩家角色（你）/);
-    assert.match(prompt,/主體不明/);
-    assert.match(prompt,/contextBefore/);
-    assert.match(prompt,/逐字 evidence/);
-    assert.match(prompt,/每欄最多 2 條/);
-    assert.match(prompt,/"sections"/);
+    assert.equal(memory.detail,'standard');assert.equal(memory.termDepth,2);
+    assert.equal(generationOptions({},'summary').maxTokens,2000);assert.equal(generationOptions({},'selection').maxTokens,1200);
+    for(const pattern of [/blurb/,/簡介/,/小總結/,/按事件發生順序/,/terms/,/逐字取自 text/,/summaryLength/,/speaker 僅是/,/玩家角色（你）/,/主體不明/,/contextBefore/,/不用/])assert.match(prompt,pattern);
+    assert.doesNotMatch(prompt,/evidence|sections/);
 });
 test('recent page setting preserves paired input and still observes available budget',()=>{
     const chat=Array.from({length:10},(_,i)=>({is_user:i%2===0,mes:'正文'+i,name:'test'})),costs=chat.map(()=>10);

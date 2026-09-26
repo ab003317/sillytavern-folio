@@ -33,7 +33,7 @@ def route_request(route):
         assert body['custom_url']=='https://existing-provider.invalid/v1'
         data=json.loads(body['messages'][-1]['content'])
         if 'catalogue' in data:
-            ids=[e['id'] for e in data['catalogue'] if '藍色' in e['summary'] or '冬天' in e['summary']][:2]
+            ids=[e['id'] for e in data['catalogue'] if '藍色' in e.get('blurb','') or '冬天' in e.get('blurb','')][:2]
             answer={'ids':ids}
         else:
             evidence=data['text'][:80]

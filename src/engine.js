@@ -1,5 +1,5 @@
 import { KEY, MODEL, bookPages, isStoryMessage, newRecord, migrateRecord, splitBody, summaryChunks, fingerprint, cleanBody, chatStamps, samePrefix, messageHandle,
-    excerpt, parsePageSummary, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM, RECALL_NOTE_NAME, recallNote, DIGEST_HEADER, DIGEST_CONTINUED, digestLine, estimatedTokens,
+    excerpt, parsePageRecord, summaryLength, RECORD_FORMAT, isLegacyRecord, termHits, parseSelection, selectionReasons, rankCandidates, budgetFor, recentPages, terms, SUMMARY_SYSTEM, SELECT_SYSTEM, RECALL_NOTE_NAME, recallNote, DIGEST_HEADER, DIGEST_CONTINUED, digestLine, estimatedTokens,
     SUMMARY_CHUNK_CHARS, SUMMARY_CONTEXT_CHARS } from './core.js';
 import { uid } from './host.js';
 import { mergeUsage, usageView, bindResponse } from './usage.js';
@@ -145,7 +145,7 @@ export class Engine {
             ready:!!p.record?.done,indexed:!!p.record?.done&&this.vectors.has(this.vectorKey(p.record)),pinned:!!p.record?.pinned,
             rebuilding:this.pendingRebuild(p.record),rebuilt:!!p.record?.done&&!!p.record?.rebuild&&!p.record.rebuild.cancelled,previousSummary:!p.record?.done&&!!p.record?.rebuild?.previous?.summary,
             parts:p.record?.parts?.length??0,totalParts:splitBody(p.body,p.record?.chunkSize??SUMMARY_CHUNK_CHARS).length,droppedEvidence:p.record?.droppedEvidence??0,
-            edited:!!p.record?.edited,hidden:!!p.message.is_system,automatic:this.autoPages.has(p.message)}));
+            edited:!!p.record?.edited,hidden:!!p.message.is_system,automatic:this.autoPages.has(p.message),blurb:p.record?.blurb??'',terms:p.record?.terms??[],legacy:isLegacyRecord(p.record)}));
         const helpers=Object.fromEntries(['summary','selection'].map(role=>{const h=this.host.helper?.(role,true)??{};return [role,{connection:h.connection??'current',label:h.label,model:h.model??'',lastModel:this.host.models?.[role]??'',provider:h.provider??'',baseUrl:h.baseUrl??'',hasKey:!!h.hasKey}];}));
         const usageViews=this.usageIdentity===this.host.identity()?this.usageViews():[],usageRecords=usageViews.filter(x=>x.resultState==='present');
         const total=entries.length,ready=entries.filter(p=>p.ready).length,indexed=entries.filter(p=>p.indexed).length,rebuild=this.rebuildState();
@@ -159,7 +159,8 @@ export class Engine {
         const auto={active:automatic&&automaticTotal>0&&(automaticWorking||pendingSummaries>0||pendingVectors>0),available:automatic,total:automaticTotal,ready:automaticReady,indexed:automaticIndexed,phase,
             done:phase==='vector'?automaticIndexed:automaticReady,pendingSummaries,pendingVectors,manualPending,catalogueTotal:total,current:this.work?{...this.work}:null,
             waitingForGeneration:this.generating,complete:automaticTotal>0&&automaticReady===automaticTotal&&automaticIndexed===automaticTotal};
-        return {entries,total,ready,indexed,missing:total-indexed,summaryMissing:total-ready,vectorMissing:ready-indexed,vectorLoading:this.vectorLoading,hidden:entries.filter(p=>p.hidden).length,
+        const legacy=entries.filter(p=>p.legacy).length;
+        return {entries,total,ready,indexed,legacy,missing:entries.filter(p=>!p.indexed||p.legacy).length,summaryMissing:total-ready,vectorMissing:ready-indexed,vectorLoading:this.vectorLoading,hidden:entries.filter(p=>p.hidden).length,
             status:this.status,warning:this.warning,last:this.last,model:this.host.model,enabled:this.host.settings().enabled,
             conflict:this.conflict,work:this.work,activity:this.activity,connectionTests:this.connectionTests,busy:this.running||!!this.selectController||this.resetting,notice:this.notice,helpers,
             resetting:this.resetting,leaseWaiting:this.leaseWaiting,stopping:this.stopping,stopFailed:this.stopFailures.has(this.host.identity()),rebuild,rebuildQueued:this.queuedRebuild?.identity===this.host.identity(),rebuildMode:this.queuedRebuild?.mode??this.rebuildOperation?.mode??rebuild?.mode??'all',generating:this.generating,chatIdentity:this.host.identity(),auto,
@@ -263,7 +264,7 @@ export class Engine {
         const r=structuredClone(p.record??newRecord(p.message,p.playerInput));r.pinned=!r.pinned;await this.savePage(p,r);
     }
     async refresh(index) {return this.queueRebuild([this.resolvePage(index)]);}
-    needsRebuild(page,mode){return mode==='all'||(mode==='vectors'?page.record?.done&&!this.hasVector(page.record):!this.hasVector(page.record));}
+    needsRebuild(page,mode){return mode==='all'||(mode==='vectors'?page.record?.done&&!this.hasVector(page.record):!this.hasVector(page.record)||isLegacyRecord(page.record));}
     rebuildTargets(mode='all'){return this.pages().filter(p=>this.needsRebuild(p,mode));}
     async refreshAll(identity=this.host.identity()) {return this.requestRebuild('all',identity);}
     async refreshMissing(identity=this.host.identity()) {return this.requestRebuild('missing',identity);}
@@ -303,7 +304,7 @@ export class Engine {
     validateRebuild(pages,mode='all') {
         if(!pages.length)throw new Error('這段聊天沒有可整理的正文，請先開啟聊天');
         if(this.conflict)throw new Error('Anima 仍在接管記憶，請先停用衝突插件');
-        if(mode!=='all'&&pages.every(p=>p.record?.done))return;
+        if(mode!=='all'&&pages.every(p=>p.record?.done&&!isLegacyRecord(p.record)))return;
         if(this.host.context().mainApi!=='openai')throw new Error('請先使用酒館「聊天補全」模式');
         const helper=this.host.helper?.('summary');if(helper&&helper.connection!=='main'&&!helper.model)throw new Error('請先在記憶助手填寫總結模型');
     }
@@ -342,7 +343,7 @@ export class Engine {
             const job={id:uid(),mode:operation.mode,requestedAt:[...live.values()].reduce((n,p)=>Math.max(n,(p.record?.rebuild?.requestedAt??0)+1),Date.now()),total:pages.length};
             const pairs=pages.map(p=>{const current=live.get(p.message)?.record;
                 const previous=current?structuredClone(current):null;if(previous)delete previous.rebuild;
-                const base=operation.mode!=='all'&&current?structuredClone(current):newRecord(p.message,p.playerInput);
+                const base=operation.mode!=='all'&&current&&!isLegacyRecord(current)?structuredClone(current):newRecord(p.message,p.playerInput);
                 const r={...base,pinned:!!current?.pinned,revision:uid(),rebuild:{...job,...(base.done?{}:{previous})}};return [p,r];});
             await this.persistRebuild(pairs,validate);
             if(operation.cancelled||identity!==this.host.identity()||this.disposed)return;
@@ -454,11 +455,15 @@ export class Engine {
             if(parts[r.parts.length]!==undefined){
                 const partIndex=r.parts.length,text=parts[partIndex],usesDefault=typeof this.host.advanced==='function'&&!this.host.advanced('summary').prompt;
                 const previous=partIndex?parts[partIndex-1]:pages.filter(page=>page.index<p.index).at(-1)?.body??'';
-                const raw=await this.host.complete(SUMMARY_SYSTEM,JSON.stringify({speaker:p.name,contextBefore:usesDefault?String(previous).slice(-SUMMARY_CONTEXT_CHARS):'',playerInput:excerpt(p.playerInput,SUMMARY_CONTEXT_CHARS),text}),{signal});active(p);
-                const parsed=parsePageSummary(raw,text,{requireEvidence:usesDefault});r.parts.push(parsed.summary);r.title||=parsed.title;
-                if(parsed.droppedEvidence)r.droppedEvidence=(r.droppedEvidence??0)+parsed.droppedEvidence;
+                const length=summaryLength(text.length,this.host.memory?.()?.detail);
+                const raw=await this.host.complete(SUMMARY_SYSTEM,JSON.stringify({speaker:p.name,contextBefore:usesDefault?String(previous).slice(-SUMMARY_CONTEXT_CHARS):'',playerInput:excerpt(p.playerInput,SUMMARY_CONTEXT_CHARS),summaryLength:length,text}),{signal});active(p);
+                const parsed=parsePageRecord(raw,text);r.parts.push(parsed.summary);r.title||=parsed.title;
+                r.blurbs=[...(r.blurbs??[]),parsed.blurb];r.terms=[...new Set([...(r.terms??[]),...parsed.terms])].slice(0,30);
+                if(parsed.droppedTerms)r.droppedTerms=(r.droppedTerms??0)+parsed.droppedTerms;
             }
             Object.assign(r,{summary:r.parts.join('\n'),done:r.parts.length===parts.length,model:this.host.models?.summary??this.host.model,updatedAt:Date.now()});
+            // Only a page whose every part came from this format carries a blurb and terms.
+            if(r.done&&r.blurbs?.length===r.parts.length)Object.assign(r,{format:RECORD_FORMAT,blurb:r.blurbs.join(' ')});
             if(r.done&&r.rebuild)delete r.rebuild.previous;
             await this.cache.put('records',identity+':'+r.hash,structuredClone(r));active(p);
             p.message.extra??={};p.message.extra[KEY]=r;await this.host.save();active(p);
@@ -517,18 +522,21 @@ export class Engine {
         }
         return null;
     }
-    // Summaries keep story order: each run of unsent pages becomes one narrator
-    // message between the bodies around it. Oldest pages give way first: full
-    // entry, then title only, then omitted.
+    // Retellings keep story order: each run of unsent pages becomes one narrator
+    // message between the bodies around it. When room is short the oldest pages
+    // give way first: retelling, then blurb, then title, then omitted.
     async digest(pages,room,sent,active) {
         if(!pages.length||room<=0)return null;
         pages=[...pages].sort((a,b)=>a.i-b.i);sent=[...sent];
         const run=[];let r=0;
         for(const [k,p] of pages.entries()){if(k&&sent.some(i=>i>pages[k-1].i&&i<p.i))r++;run.push(r);}
-        const [head,cont,...costs]=await Promise.all([this.host.count(DIGEST_HEADER),this.host.count(DIGEST_CONTINUED),...pages.flatMap(p=>[this.host.count(digestLine(p)),this.host.count(digestLine(p,false))])]);active();
-        const mode=pages.map(()=>'full');let total=head+cont*r+pages.reduce((n,_,k)=>n+costs[2*k],0),omitted=0;
-        for(let k=0;k<pages.length&&total>room;k++){total-=costs[2*k]-costs[2*k+1];mode[k]='title';}
-        while(omitted<pages.length&&total>room){total-=costs[2*omitted+1];mode[omitted]='omit';omitted++;}
+        const levels=['summary','blurb','title'];
+        const [head,cont,...flat]=await Promise.all([this.host.count(DIGEST_HEADER),this.host.count(DIGEST_CONTINUED),...pages.flatMap(p=>levels.map(level=>this.host.count(digestLine(p,level))))]);active();
+        const cost=(k,level)=>flat[3*k+levels.indexOf(level)],mode=pages.map(()=>'summary');
+        let total=head+cont*r+pages.reduce((n,_,k)=>n+cost(k,'summary'),0),omitted=0;
+        for(const [from,to] of [['summary','blurb'],['blurb','title']])
+            for(let k=0;k<pages.length&&total>room;k++)if(mode[k]===from&&cost(k,to)<cost(k,from)){total-=cost(k,from)-cost(k,to);mode[k]=to;}
+        while(omitted<pages.length&&total>room){total-=cost(omitted,mode[omitted]);mode[omitted]='omit';omitted++;}
         if(omitted===pages.length)return null;
         const blocks=[];
         for(const [k,p] of pages.entries()){
@@ -537,9 +545,10 @@ export class Engine {
             if(!block||block.run!==run[k]){
                 block={run:run[k],key:p.i,lines:blocks.length?[DIGEST_CONTINUED]:[DIGEST_HEADER,...(omitted?[`（更早 ${omitted} 頁因容量省略）`]:[])]};blocks.push(block);
             }
-            block.lines.push(digestLine(p,mode[k]==='full'));
+            block.lines.push(digestLine(p,mode[k]));
         }
-        return {blocks:blocks.map(b=>({key:b.key,body:b.lines.join('\n')})),tokens:total,pages:pages.filter((_,k)=>mode[k]!=='omit').map(p=>p.number),titleOnly:pages.filter((_,k)=>mode[k]==='title').map(p=>p.number),omitted};
+        const at=level=>pages.filter((_,k)=>mode[k]===level).map(p=>p.number);
+        return {blocks:blocks.map(b=>({key:b.key,body:b.lines.join('\n')})),tokens:total,pages:pages.filter((_,k)=>mode[k]!=='omit').map(p=>p.number),blurbOnly:at('blurb'),titleOnly:at('title'),omitted};
     }
     async intercept(chat,contextSize,abort,type,options={}) {
         if(this.conflict||this.host.context().mainApi!=='openai'||!this.host.settings().enabled||['quiet','impersonate'].includes(type)||!chat.length)return;
@@ -592,7 +601,7 @@ export class Engine {
             const entries=original.flatMap((m,i)=>{
                 const sourceIndex=this.sourceIndex(m),source=sourceByIndex.get(sourceIndex),r=source?.record;if(!source)return [];
                 return [{...source,i,index:sourceIndex,id:`p${sourceIndex}`,userIndices:source.userIndices.map(index=>positionsBySource.get(index)).filter(index=>index!==undefined),
-                    title:r?.title||excerpt(source.body,32),summary:r?.summary??'',ready:!!r?.done,pinned:!!r?.pinned,record:r}];
+                    title:r?.title||excerpt(source.body,32),summary:r?.summary??'',blurb:r?.blurb??'',terms:r?.terms??[],ready:!!r?.done,pinned:!!r?.pinned,record:r}];
             });
             for(const p of entries)if(recent.picked.has(p.i))for(const i of p.userIndices)if(!recent.picked.has(i)){recent.picked.add(i);recent.used+=costs[i];}
             const older=entries.filter(p=>!recent.picked.has(p.i)),unready=older.filter(p=>!p.ready),pool=older.filter(p=>p.ready);
@@ -622,19 +631,27 @@ export class Engine {
                 try{[queryVector]=await this.embedder.embed([excerpt(rankQuery,400)],signal,true);}
                 catch(e){active();trace.mode='lexical';warning='向量暫不可用，這次以文字匹配查頁';}
                 active();
-                const candidates=rankCandidates(pool,rankQuery,queryVector,18);let ids=[],selectedReasons={};
-                if(candidates.length){
-                    try{
-                        const raw=await this.host.complete(SELECT_SYSTEM,JSON.stringify({query:excerpt(query,1800),recentContext:excerpt(lastReply,700),
-                            catalogue:candidates.map(p=>({id:p.id,title:p.title,summary:excerpt(p.summary,900)}))}),{signal,selection:true});
-                        active();ids=parseSelection(raw,candidates);selectedReasons=selectionReasons(raw,ids);
-                    }catch(e){active();trace.mode='fallback';warning=e.name==='FolioContextError'?`${e.message}；這次暫用目錄匹配`:'選頁助手暫不可用，這次使用最相關的目錄匹配';ids=candidates.filter(p=>p.lexical>0||p.semantic>.5).slice(0,3).map(p=>p.id);}
-                }
+                // Page terms matched against the new input, the scene just written and
+                // the rest of the recent window, then recursively through the hits.
+                const recentBodies=[...recent.picked].filter(i=>!cleaned[i].is_user).map(i=>cleaned[i].mes);
+                const hits=termHits(pool,[{text:query,weight:3},{text:lastReply,weight:2},...recentBodies.map(text=>({text,weight:1}))],{depth:memory.termDepth??2});
+                for(const p of pool){const h=hits.get(p.id);p.termScore=h?.score??0;p.hits=h?.hits??[];p.hitStep=h?.step;}
+                const ranked=rankCandidates(pool,rankQuery,queryVector,pool.length),rank=new Map(ranked.map((p,k)=>[p.id,k]));
+                // The selector reads every page's blurb in page order, like a shelf of
+                // book blurbs; only a very long chat is cut to its most relevant pages.
+                const catalogue=(pool.length>150?ranked.slice(0,150):pool).slice().sort((a,b)=>a.i-b.i);let ids=[],selectedReasons={};
+                try{
+                    const raw=await this.host.complete(SELECT_SYSTEM,JSON.stringify({query:excerpt(query,1800),recentContext:excerpt(lastReply,700),
+                        catalogue:catalogue.map(p=>({id:p.id,title:p.title,blurb:p.blurb||excerpt(p.summary,120),...(p.hits.length?{hits:p.hits.slice(0,6)}:{})}))}),{signal,selection:true});
+                    active();ids=parseSelection(raw,catalogue);selectedReasons=selectionReasons(raw,ids);
+                }catch(e){active();trace.mode='fallback';warning=e.name==='FolioContextError'?`${e.message}；這次暫用目錄匹配`:'選頁助手暫不可用，這次使用最相關的目錄匹配';ids=ranked.filter(p=>p.term>0||p.lexical>0||p.semantic>.5).slice(0,3).map(p=>p.id);}
                 ids=ids.slice(0,recallLimit);
-                // Keep room for the digest of pages that will not be sent in full.
-                const reserve=memory.summaryBlock===false?0:Math.min(Math.floor(budget.history*.25),pool.reduce((n,p)=>n+estimatedTokens(digestLine(p)),0));
-                trace.candidates=candidates.map(p=>({id:p.id,index:p.index,number:p.number,title:p.title,summary:p.summary,semantic:p.semantic,lexical:p.lexical,selected:ids.includes(p.id)||p.pinned,reason:p.pinned?'已釘選':selectedReasons[p.id]??(ids.includes(p.id)?'匹配備援':'助手未選用')}));
-                for(const p of [...pool.filter(p=>p.pinned),...ids.map(id=>candidates.find(p=>p.id===id)).filter(Boolean)]){
+                // Keep room for the retellings of pages that will not be sent in full.
+                const reserve=memory.summaryBlock===false?0:Math.min(Math.floor(budget.history*.35),pool.reduce((n,p)=>n+estimatedTokens(digestLine(p)),0));
+                const shown=new Set([...ranked.slice(0,30).map(p=>p.id),...ids,...pool.filter(p=>p.pinned).map(p=>p.id)]);
+                trace.candidates=pool.filter(p=>shown.has(p.id)).sort((a,b)=>(rank.get(a.id)??1e9)-(rank.get(b.id)??1e9)).map(p=>({id:p.id,index:p.index,number:p.number,title:p.title,blurb:p.blurb,summary:p.summary,hits:p.hits,semantic:rank.has(p.id)?ranked[rank.get(p.id)].semantic:0,lexical:rank.has(p.id)?ranked[rank.get(p.id)].lexical:0,selected:ids.includes(p.id)||p.pinned,reason:p.pinned?'已釘選':selectedReasons[p.id]??(ids.includes(p.id)?'匹配備援':'助手未選用')}));
+                trace.catalogue=catalogue.length;
+                for(const p of [...pool.filter(p=>p.pinned),...ids.map(id=>pool.find(p=>p.id===id)).filter(Boolean)]){
                     if(chosen.has(p.i))continue;
                     const positions=[...p.userIndices,p.i].filter(i=>!chosen.has(i)),cost=positions.reduce((n,i)=>n+costs[i],0),limit=Math.max(budget.history-reserve,recent.used);
                     if(used+cost>limit){
@@ -667,7 +684,7 @@ export class Engine {
                 // Each block takes the story position of its first page; no sent message lies inside a run.
                 const placed=[...ordered.map((i,j)=>[i,result[j]]),...digest.blocks.map(b=>[b.key,{name:RECALL_NOTE_NAME,is_user:false,is_system:false,send_date:'folio-digest',mes:b.body,extra:{type:'narrator',folio_summary:true}}])];
                 result.splice(0,result.length,...placed.sort((a,b)=>a[0]-b[0]).map(x=>x[1]));
-                used+=digest.tokens;trace.summary={body:digest.blocks.map(b=>b.body).join('\n\n'),parts:digest.blocks.map(b=>b.body),pages:digest.pages,titleOnly:digest.titleOnly,omitted:digest.omitted,tokens:digest.tokens,final:null};
+                used+=digest.tokens;trace.summary={body:digest.blocks.map(b=>b.body).join('\n\n'),parts:digest.blocks.map(b=>b.body),pages:digest.pages,blurbOnly:digest.blurbOnly,titleOnly:digest.titleOnly,omitted:digest.omitted,tokens:digest.tokens,final:null};
             }
             if(note){
                 const at=result.findLastIndex(m=>m.is_user);
@@ -742,10 +759,10 @@ export class Engine {
         this.controller?.abort();this.selectController?.abort();const controller=new AbortController();this.selectController=controller;
         const start=performance.now(),selection=role==='selection',pending={pending:true};this.connectionTests[role]=pending;this.emit();
         try{
-            const catalogue=[{id:'letter',summary:'船長交付藍色信件，約定冬天前送到山城。'},{id:'dinner',summary:'旅人在街市吃了一碗牛肉麵。'}];
-            const input=selection?{query:'連線測試：船長的信應在甚麼時候送到哪裡？',catalogue}:{speaker:'連線測試',playerInput:'請保存信件。',text:'船長將藍色信件交給旅人，約定冬天前送到山城。'};
+            const catalogue=[{id:'letter',title:'船長的信',blurb:'船長交付藍色信件，約定冬天前送到山城。'},{id:'dinner',title:'街市晚餐',blurb:'旅人在街市吃了一碗牛肉麵。'}];
+            const input=selection?{query:'連線測試：船長的信應在甚麼時候送到哪裡？',catalogue}:{speaker:'連線測試',playerInput:'請保存信件。',summaryLength:80,text:'船長將藍色信件交給旅人，約定冬天前送到山城。'};
             const raw=await this.host.complete(selection?SELECT_SYSTEM:SUMMARY_SYSTEM,JSON.stringify(input),{signal:controller.signal,selection});controller.signal.throwIfAborted();
-            let parsed;if(selection){const ids=parseSelection(raw,catalogue);if(!ids.includes('letter')||ids.includes('dinner'))throw new Error('模型有回應，但未通過提取測試：應選信件，不應選晚餐');parsed={summary:'成功從兩段小摘要選出信件正文。',ids};}else parsed=parsePageSummary(raw,input.text,{requireEvidence:typeof this.host.advanced==='function'&&!this.host.advanced('summary').prompt});
+            let parsed;if(selection){const ids=parseSelection(raw,catalogue);if(!ids.includes('letter')||ids.includes('dinner'))throw new Error('模型有回應，但未通過提取測試：應選信件，不應選晚餐');parsed={summary:'成功從兩段簡介選出信件正文。',ids};}else parsed=parsePageRecord(raw,input.text);
             if(this.connectionTests[role]===pending)this.connectionTests[role]={ok:true,model:this.host.models?.[role]??this.host.model,ms:Math.round(performance.now()-start),...parsed};
         }catch(e){if(this.connectionTests[role]===pending)this.connectionTests[role]=controller.signal.aborted?null:{ok:false,error:String(e.message??e)};}
         finally{if(this.selectController===controller)this.selectController=null;this.emit();this.schedule();}
