@@ -458,7 +458,7 @@ export class Engine {
                 const length=summaryLength(text.length,this.host.memory?.()?.detail);
                 const raw=await this.host.complete(SUMMARY_SYSTEM,JSON.stringify({speaker:p.name,contextBefore:usesDefault?String(previous).slice(-SUMMARY_CONTEXT_CHARS):'',playerInput:excerpt(p.playerInput,SUMMARY_CONTEXT_CHARS),summaryLength:length,text}),{signal});active(p);
                 const parsed=parsePageRecord(raw,text);r.parts.push(parsed.summary);r.title||=parsed.title;
-                r.blurbs=[...(r.blurbs??[]),parsed.blurb];r.terms=[...new Set([...(r.terms??[]),...parsed.terms])].slice(0,30);
+                r.blurbs=[...(r.blurbs??[]),parsed.blurb];r.terms=[...new Set([...(r.terms??[]),...parsed.terms])].slice(0,20);
                 if(parsed.droppedTerms)r.droppedTerms=(r.droppedTerms??0)+parsed.droppedTerms;
             }
             Object.assign(r,{summary:r.parts.join('\n'),done:r.parts.length===parts.length,model:this.host.models?.summary??this.host.model,updatedAt:Date.now()});
