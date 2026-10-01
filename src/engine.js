@@ -551,7 +551,9 @@ export class Engine {
         return {blocks:blocks.map(b=>({key:b.key,body:b.lines.join('\n')})),tokens:total,pages:pages.filter((_,k)=>mode[k]!=='omit').map(p=>p.number),blurbOnly:at('blurb'),titleOnly:at('title'),omitted};
     }
     async intercept(chat,contextSize,abort,type,options={}) {
-        if(this.conflict||this.host.context().mainApi!=='openai'||!this.host.settings().enabled||['quiet','impersonate'].includes(type)||!chat.length)return;
+        // The "new reply auto memory" switch only controls background summarising.
+        // Retrieval over pages already catalogued must keep working when it is off.
+        if(this.conflict||this.host.context().mainApi!=='openai'||['quiet','impersonate'].includes(type)||!chat.length)return;
         if(chat.some(m=>m.extra?.tool_invocations?.length||m.extra?.media?.length)){
             this.warning='這次含工具或多媒體訊息，保留酒館原本的歷史處理';this.emit();return;
         }

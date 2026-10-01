@@ -1069,3 +1069,10 @@ test('legacy cards are upgraded by the missing-only rebuild, manual edits are le
     const after=bookPages(r.c.chat);assert.equal(calls,1);assert.equal(after[0].record.format,3);assert.deepEqual(after[0].record.terms,['舊頁一']);
     assert.equal(after[1].record.edited,true);assert.equal(after[1].record.format,undefined);assert.equal(r.engine.snapshot().legacy,0);
 });
+
+test('turning off new-reply auto memory stops summarising but not recall from existing pages',async()=>{
+    const source=[];for(let i=0;i<6;i++){source.push(message('玩家'+i,2*i,true),message(`第${i}段`+'。'.repeat(300),2*i+1));}source.push(message('問',12,true));
+    const r=rig(source);ready(r);r.engine.toggle(false);r.host.memory=()=>({recentPages:1});let selector=0;r.host.complete=async()=>{selector++;return '{"ids":["p1"]}';};
+    const core=structuredClone(r.c.chat);await r.engine.intercept(core,100000,()=>assert.fail('abort'),'normal');
+    assert.equal(selector,1);assert.ok(core.some(m=>m.extra?.folio_summary));assert.ok(story(core).length<source.length);assert.equal(r.engine.last.mode,'hybrid');
+});
