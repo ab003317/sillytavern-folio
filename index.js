@@ -4,6 +4,7 @@ import { Embedder } from './src/embedding.js';
 import { Engine } from './src/engine.js';
 import { mountUI } from './src/ui.js';
 import { deferPromptDryRuns, calmFrameAnimations } from './src/perf.js';
+import { watchForUpdate } from './src/update.js';
 
 const host = new Host(), context = host.context(), cache = new Cache();
 let ui;
@@ -49,7 +50,14 @@ for (const name of ['MAIN_API_CHANGED','CHATCOMPLETION_SOURCE_CHANGED','CHATCOMP
     host.rejected.clear(); engine.connectionTests={summary:null,selection:null};engine.changed();
 });
 const startup = setTimeout(initialize, 2500);
+// Pick up deployed updates without a manual hard refresh, but never mid-reply,
+// mid-request, with unsent text in the box or while the memory panel is open.
+const updater = watchForUpdate({
+    base: new URL('./', import.meta.url).href,
+    isBusy: () => engine.generating || engine.running || engine.resetting || !!document.querySelector('#send_textarea')?.value.trim() || !!document.querySelector('dialog.folio-dialog[open]'),
+    notify: version => globalThis.toastr?.info(`書頁記憶已更新到 ${version}，閒置時會自動重新載入頁面`),
+});
 window.addEventListener('pagehide',()=>{
-    clearTimeout(startup);engine.dispose();ui?.dispose();deferral?.dispose();calm?.dispose();
+    clearTimeout(startup);engine.dispose();ui?.dispose();deferral?.dispose();calm?.dispose();updater.dispose();
     for (const [event,fn] of listeners)context.eventSource.removeListener(event,fn);
 },{once:true});
